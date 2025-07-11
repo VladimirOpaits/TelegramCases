@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from database import DatabaseManager
 from Cases import get_random_gift, get_case_info, get_all_cases_info, CaseRepository
 from config import DATABASE_URL, CORS_ORIGINS, API_HOST, API_PORT, RABBITMQ_URL, DEV_MODE
-from pydantic import BaseModelA
+from pydantic import BaseModel
 import uvicorn
 import os
 from contextlib import asynccontextmanager
@@ -153,7 +153,6 @@ async def open_case(case_id: int, user_id: int):
       case_info = get_case_info(case_id)
       case_cost = case_info["cost"]
 
-      # Проверяем баланс пользователя
       current_balance = await db_manager.get_fantics(user_id)
       if current_balance is None:
           await db_manager.add_user(user_id)
@@ -165,11 +164,9 @@ async def open_case(case_id: int, user_id: int):
               detail=f"Недостаточно фантиков. Требуется: {case_cost}, доступно: {current_balance}"
           )
 
-      # Получаем приз
       gift = get_random_gift(case_id)
 
       if use_rabbitmq and router:
-          # Продакшн режим с RabbitMQ
           await router.broker.publish(
               {
                   "user_id": user_id,
@@ -255,14 +252,12 @@ async def get_user_fantics(user_id: int):
   """Получить баланс фантиков пользователя"""
   fantics = await db_manager.get_fantics(user_id)
   if fantics is None:
-      # Создаем пользователя если его нет
       await db_manager.add_user(user_id)
       fantics = 0
   
   print(f"💎 Баланс пользователя {user_id}: {fantics}")
   return {"user_id": user_id, "fantics": fantics}
 
-# Обработчик RabbitMQ сообщений (только если RabbitMQ включен)
 if use_rabbitmq and router:
   @router.subscriber("transactions")
   async def handle_transaction(message: dict):
@@ -298,8 +293,7 @@ if __name__ == "__main__":
   print(f"🔧 Режим: {'Продакшн' if not DEV_MODE else 'Разработка'}")
   print(f"🗄️ База данных: {'Neon PostgreSQL' if 'neon' in DATABASE_URL else 'PostgreSQL' if 'postgresql' in DATABASE_URL else 'SQLite'}")
   print(f"🐰 RabbitMQ: {'Включен' if use_rabbitmq else 'Отключен'}")
-  
-  # Для Railway используем строку импорта
+ 
   if not DEV_MODE:
       uvicorn.run("main:app", host=API_HOST, port=API_PORT)
   else:
