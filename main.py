@@ -7,8 +7,8 @@ from config import DATABASE_URL, CORS_ORIGINS, API_HOST, API_PORT, RABBITMQ_URL,
 from pydantic import BaseModel
 import uvicorn
 import os
+from contextlib import asynccontextmanager
 
-# Условный импорт RabbitMQ
 try:
   from faststream.rabbit.fastapi import RabbitRouter
   RABBITMQ_AVAILABLE = True
@@ -16,19 +16,16 @@ except ImportError:
   RABBITMQ_AVAILABLE = False
   print("⚠️ FastStream не установлен, RabbitMQ отключен")
 
-app = FastAPI(title="Telegram Casino API", version="1.0.0")
 
-# ИСПРАВЛЕННАЯ CORS конфигурация
 app.add_middleware(
   CORSMiddleware,
-  allow_origins=["*"],  # Временно разрешаем все для отладки
+  allow_origins=["*"],  # Временно
   allow_credentials=True,
   allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allow_headers=["*"],
   expose_headers=["*"]
 )
 
-# Определяем использование RabbitMQ
 use_rabbitmq = False
 router = None
 
@@ -44,7 +41,6 @@ if RABBITMQ_AVAILABLE and RABBITMQ_URL and not DEV_MODE:
 else:
   print("📝 RabbitMQ отключен (режим разработки или недоступен)")
 
-# Подключение статических файлов
 try:
   app.mount("/static", StaticFiles(directory="static"), name="static")
   print("📁 Статические файлы подключены")
@@ -56,6 +52,37 @@ db_manager = DatabaseManager(DATABASE_URL)
 class FanticsTransaction(BaseModel):
   user_id: int
   amount: int
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("🚀 Запуск API сервера...")
+    print(f"🔒 CORS настройки: {CORS_ORIGINS}")
+    try:
+        await db_manager.init_db()
+        print("✅ База данных инициализирована")
+        
+        if DEV_MODE:
+            await db_manager.add_user(123456, "demo_user")
+            await db_manager.set_fantics(123456, 50000)
+            print("🎮 Демо пользователь создан с 50000 фантиков")
+            
+        print(f"📊 Доступно кейсов: {len(CaseRepository.get_all_cases())}")
+        
+        if use_rabbitmq:
+            print("🐰 RabbitMQ готов к работе")
+        else:
+            print("⚡ Прямые транзакции активны")
+            
+    except Exception as e:
+        print(f"❌ Ошибка инициализации: {e}")
+    
+    yield 
+    
+    await db_manager.close()
+    print("🔌 API сервер остановлен")
+
+app = FastAPI(title="Telegram Casino API", version="1.0.0", lifespan=lifespan)
 
 @app.get("/")
 async def root():
@@ -85,34 +112,10 @@ async def health_check():
   except Exception as e:
       return {"status": "error", "database": "disconnected", "error": str(e)}
 
-# Добавляем специальный CORS endpoint для тестирования
 @app.options("/{path:path}")
 async def options_handler(path: str):
   return {"message": "CORS preflight OK"}
 
-@app.on_event("startup")
-async def startup_event():
-  print("🚀 Запуск API сервера...")
-  print(f"🔒 CORS настройки: {CORS_ORIGINS}")
-  try:
-      await db_manager.init_db()
-      print("✅ База данных инициализирована")
-      
-      # Добавляем тестового пользователя только в DEV режиме
-      if DEV_MODE:
-          await db_manager.add_user(123456, "demo_user")
-          await db_manager.set_fantics(123456, 50000)
-          print("🎮 Демо пользователь создан с 50000 фантиков")
-          
-      print(f"📊 Доступно кейсов: {len(CaseRepository.get_all_cases())}")
-      
-      if use_rabbitmq:
-          print("🐰 RabbitMQ готов к работе")
-      else:
-          print("⚡ Прямые транзакции активны")
-          
-  except Exception as e:
-      print(f"❌ Ошибка инициализации: {e}")
 
 @app.get("/cases")
 async def get_cases():
@@ -212,13 +215,11 @@ async def add_fantics(transaction: FanticsTransaction):
 
   user_id = transaction.user_id
   
-  # Убеждаемся, что пользователь существует
   user = await db_manager.get_user(user_id)
   if not user:
       await db_manager.add_user(user_id)
 
   if use_rabbitmq and router:
-      # Продакшн режим с RabbitMQ
       await router.broker.publish(
           {
               "user_id": user_id,
@@ -231,7 +232,6 @@ async def add_fantics(transaction: FanticsTransaction):
       message = f"Запрос на добавление {transaction.amount} фантиков отправлен в очередь"
       print(f"🐰 {message}")
   else:
-      # DEV режим с прямым добавлением
       success = await db_manager.add_fantics(user_id, transaction.amount)
       message = f"Добавлено {transaction.amount} фантиков" if success else "Ошибка добавления фантиков"
       print(f"⚡ {message}")
@@ -282,13 +282,7 @@ if use_rabbitmq and router:
       except Exception as e:
           print(f"❌ Ошибка обработки транзакции: {e}")
 
-  # Подключаем RabbitMQ роутер
   app.include_router(router)
-
-@app.on_event("shutdown")
-async def shutdown_event():
-  await db_manager.close()
-  print("🔌 API сервер остановлен")
 
 if __name__ == "__main__":
   print(f"🌐 Запуск сервера на http://{API_HOST}:{API_PORT}")
@@ -298,6 +292,6 @@ if __name__ == "__main__":
   
   # Для Railway используем строку импорта
   if not DEV_MODE:
-      uvicorn.run("RestApi:app", host=API_HOST, port=API_PORT)
+      uvicorn.run("main:app", host=API_HOST, port=API_PORT)
   else:
       uvicorn.run(app, host=API_HOST, port=API_PORT, reload=True)
