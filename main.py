@@ -16,6 +16,21 @@ except ImportError:
   RABBITMQ_AVAILABLE = False
   print("⚠️ FastStream не установлен, RabbitMQ отключен")
 
+use_rabbitmq = False
+router = None
+
+if RABBITMQ_AVAILABLE and RABBITMQ_URL and not DEV_MODE:
+  print("🐰 Подключение к RabbitMQ:", RABBITMQ_URL.split('@')[1] if '@' in RABBITMQ_URL else RABBITMQ_URL)
+  try:
+      router = RabbitRouter(RABBITMQ_URL)
+      use_rabbitmq = True
+      print("✅ RabbitMQ подключен")
+  except Exception as e:
+      print(f"❌ Ошибка подключения к RabbitMQ: {e}")
+      use_rabbitmq = False
+else:
+  print("📝 RabbitMQ отключен (режим разработки или недоступен)")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Запуск API сервера...")
@@ -55,21 +70,6 @@ app.add_middleware(
   allow_headers=["*"],
   expose_headers=["*"]
 )
-
-use_rabbitmq = False
-router = None
-
-if RABBITMQ_AVAILABLE and RABBITMQ_URL and not DEV_MODE:
-  print("🐰 Подключение к RabbitMQ:", RABBITMQ_URL.split('@')[1] if '@' in RABBITMQ_URL else RABBITMQ_URL)
-  try:
-      router = RabbitRouter(RABBITMQ_URL)
-      use_rabbitmq = True
-      print("✅ RabbitMQ подключен")
-  except Exception as e:
-      print(f"❌ Ошибка подключения к RabbitMQ: {e}")
-      use_rabbitmq = False
-else:
-  print("📝 RabbitMQ отключен (режим разработки или недоступен)")
 
 try:
   app.mount("/static", StaticFiles(directory="static"), name="static")
