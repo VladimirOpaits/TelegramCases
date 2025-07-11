@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from database import DatabaseManager
 from Cases import get_random_gift, get_case_info, get_all_cases_info, CaseRepository
 from config import DATABASE_URL, CORS_ORIGINS, API_HOST, API_PORT, RABBITMQ_URL, DEV_MODE
-from pydantic import BaseModel
+from pydantic import BaseModelA
 import uvicorn
 import os
 from contextlib import asynccontextmanager
@@ -18,6 +18,7 @@ except ImportError:
 
 use_rabbitmq = False
 router = None
+broker = None
 
 if RABBITMQ_AVAILABLE and RABBITMQ_URL and not DEV_MODE:
   print("🐰 Подключение к RabbitMQ:", RABBITMQ_URL.split('@')[1] if '@' in RABBITMQ_URL else RABBITMQ_URL)
@@ -39,6 +40,10 @@ async def lifespan(app: FastAPI):
         await db_manager.init_db()
         print("✅ База данных инициализирована")
         
+        if use_rabbitmq and router:
+            await router.broker.connect()
+            print("🐰 RabbitMQ брокер подключен")
+        
         if DEV_MODE:
             await db_manager.add_user(123456, "demo_user")
             await db_manager.set_fantics(123456, 50000)
@@ -52,12 +57,16 @@ async def lifespan(app: FastAPI):
             print("⚡ Прямые транзакции активны")
             
     except Exception as e:
-        print(f"❌ Ошибка инициализации: {e}")
-    
+        print(f"❌ Ошибка инициализации: {e}")  
+      
     yield 
-    
+  
+    if use_rabbitmq and router:
+        await router.broker.close()
+        print("🐰 RabbitMQ брокер отключен")
     await db_manager.close()
     print("🔌 API сервер остановлен")
+
 
 app = FastAPI(title="Telegram Casino API", version="1.0.0", lifespan=lifespan)
 
