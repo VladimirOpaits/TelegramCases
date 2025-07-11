@@ -16,6 +16,36 @@ except ImportError:
   RABBITMQ_AVAILABLE = False
   print("⚠️ FastStream не установлен, RabbitMQ отключен")
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("🚀 Запуск API сервера...")
+    print(f"🔒 CORS настройки: {CORS_ORIGINS}")
+    try:
+        await db_manager.init_db()
+        print("✅ База данных инициализирована")
+        
+        if DEV_MODE:
+            await db_manager.add_user(123456, "demo_user")
+            await db_manager.set_fantics(123456, 50000)
+            print("🎮 Демо пользователь создан с 50000 фантиков")
+            
+        print(f"📊 Доступно кейсов: {len(CaseRepository.get_all_cases())}")
+        
+        if use_rabbitmq:
+            print("🐰 RabbitMQ готов к работе")
+        else:
+            print("⚡ Прямые транзакции активны")
+            
+    except Exception as e:
+        print(f"❌ Ошибка инициализации: {e}")
+    
+    yield 
+    
+    await db_manager.close()
+    print("🔌 API сервер остановлен")
+
+app = FastAPI(title="Telegram Casino API", version="1.0.0", lifespan=lifespan)
+
 
 app.add_middleware(
   CORSMiddleware,
@@ -53,36 +83,6 @@ class FanticsTransaction(BaseModel):
   user_id: int
   amount: int
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    print("🚀 Запуск API сервера...")
-    print(f"🔒 CORS настройки: {CORS_ORIGINS}")
-    try:
-        await db_manager.init_db()
-        print("✅ База данных инициализирована")
-        
-        if DEV_MODE:
-            await db_manager.add_user(123456, "demo_user")
-            await db_manager.set_fantics(123456, 50000)
-            print("🎮 Демо пользователь создан с 50000 фантиков")
-            
-        print(f"📊 Доступно кейсов: {len(CaseRepository.get_all_cases())}")
-        
-        if use_rabbitmq:
-            print("🐰 RabbitMQ готов к работе")
-        else:
-            print("⚡ Прямые транзакции активны")
-            
-    except Exception as e:
-        print(f"❌ Ошибка инициализации: {e}")
-    
-    yield 
-    
-    await db_manager.close()
-    print("🔌 API сервер остановлен")
-
-app = FastAPI(title="Telegram Casino API", version="1.0.0", lifespan=lifespan)
 
 @app.get("/")
 async def root():
