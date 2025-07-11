@@ -146,72 +146,70 @@ async def get_case(case_id: int):
   except ValueError as e:
       raise HTTPException(status_code=404, detail=str(e))
 
+
+
 @app.post("/open_case/{case_id}")
 async def open_case(case_id: int, user_id: int):
-  """Открыть кейс (требует оплаты фантиками)"""
-  try:
-      case_info = get_case_info(case_id)
-      case_cost = case_info["cost"]
+    """Открыть кейс (требует оплаты фантиками)"""
+    try:
+        case_info = get_case_info(case_id)
+        case_cost = case_info["cost"]
 
-      current_balance = await db_manager.get_fantics(user_id)
-      if current_balance is None:
-          await db_manager.add_user(user_id)
-          current_balance = 0
+        current_balance = await db_manager.get_fantics(user_id)
+        if current_balance is None:
+            await db_manager.add_user(user_id)
+            current_balance = 0
 
-      if current_balance < case_cost:
-          raise HTTPException(
-              status_code=400,
-              detail=f"Недостаточно фантиков. Требуется: {case_cost}, доступно: {current_balance}"
-          )
+        if current_balance < case_cost:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Недостаточно фантиков. Требуется: {case_cost}, доступно: {current_balance}"
+            )
 
-      gift = get_random_gift(case_id)
+        gift = get_random_gift(case_id)
 
-      if use_rabbitmq and router:
-          await router.broker.publish(
-              {
-                  "user_id": user_id,
-                  "amount": case_cost,
-                  "action": "spend",
-                  "reason": f"open_case_{case_id}"
-              },
-              queue="transactions",
-          )
-          
-          await router.broker.publish(
-              {
-                  "user_id": user_id,
-                  "amount": gift.cost,
-                  "action": "add",
-                  "reason": f"case_win_{case_id}"
-              },
-              queue="transactions",
-          )
-          print(f"🐰 Транзакции отправлены в RabbitMQ для пользователя {user_id}")
-      else:
-          # DEV режим с прямыми транзакциями
-          spend_success = await db_manager.subtract_fantics(user_id, case_cost)
-          if not spend_success:
-              raise HTTPException(status_code=500, detail="Ошибка списания фантиков")
-          
-          await db_manager.add_fantics(user_id, gift.cost)
-          print(f"⚡ Прямые транзакции для пользователя {user_id}")
+        await db_manager.subtract_fantics(user_id, case_cost)
+        await db_manager.add_fantics(user_id, gift.cost)
 
-      print(f"🎰 Пользователь {user_id} открыл кейс {case_id}: потратил {case_cost}, выиграл {gift.cost}")
+        if use_rabbitmq and router:
+            await router.broker.publish(
+                {
+                    "user_id": user_id,
+                    "amount": case_cost,
+                    "action": "spend",
+                    "reason": f"open_case_{case_id}"
+                },
+                queue="transactions",
+            )
+            
+            await router.broker.publish(
+                {
+                    "user_id": user_id,
+                    "amount": gift.cost,
+                    "action": "add",
+                    "reason": f"case_win_{case_id}"
+                },
+                queue="transactions",
+            )
+            print(f"🐰 Транзакции отправлены в RabbitMQ для пользователя {user_id}")
 
-      return {
-          "gift": gift.cost,
-          "case_id": case_id,
-          "spent": case_cost,
-          "profit": gift.cost - case_cost
-      }
+        print(f"🎰 Пользователь {user_id} открыл кейс {case_id}: потратил {case_cost}, выиграл {gift.cost}")
 
-  except ValueError as e:
-      raise HTTPException(status_code=404, detail=str(e))
-  except HTTPException:
-      raise
-  except Exception as e:
-      print(f"❌ Ошибка открытия кейса: {e}")
-      raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")
+        return {
+            "gift": gift.cost,
+            "case_id": case_id,
+            "spent": case_cost,
+            "profit": gift.cost - case_cost
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Ошибка открытия кейса: {e}")
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")
+
+
 
 @app.post("/fantics/add")
 async def add_fantics(transaction: FanticsTransaction):
