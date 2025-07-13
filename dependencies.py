@@ -32,6 +32,5 @@ async def get_current_user(
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Invalid Telegram auth: {str(e)}")
 
-async def get_current_user_id(user_data: dict = Depends(get_current_user)) -> int:
-    """Получает только user_id текущего пользователя"""
-    return user_data['user_id']
+def get_current_user_id(user_data=Depends(get_current_user)):
+  return user_data['id']
