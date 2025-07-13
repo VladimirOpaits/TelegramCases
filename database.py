@@ -1,9 +1,9 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import BigInteger, String, DateTime, select, func, Integer, CheckConstraint
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy import BigInteger, String, DateTime, select, func, Integer, CheckConstraint, Float, ForeignKey, UniqueConstraint
 from datetime import datetime
 import os
-from typing import Optional
+from typing import Optional, List
 
 
 class Base(DeclarativeBase):
@@ -30,20 +30,68 @@ class User(Base):
         return f"<User(id={self.id}, user_id={self.user_id}, username='{self.username}', fantics='{self.fantics}')>"
 
 
+class Case(Base):
+    __tablename__ = "cases"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    cost: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    case_presents: Mapped[List["CasePresent"]] = relationship(
+        back_populates="case", 
+        cascade="all, delete-orphan"
+    )
+
+    def __repr__(self):
+        return f"<Case(id={self.id}, name='{self.name}', cost={self.cost})>"
+
+
+class Present(Base):
+    __tablename__ = "presents"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    cost: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+    
+    case_presents: Mapped[List["CasePresent"]] = relationship(back_populates="present")
+
+    def __repr__(self):
+        return f"<Present(id={self.id}, cost={self.cost})>"
+
+
+class CasePresent(Base):
+    __tablename__ = "case_presents"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.id", ondelete="CASCADE"))
+    present_id: Mapped[int] = mapped_column(ForeignKey("presents.id"))
+    probability: Mapped[float] = mapped_column(Float, nullable=False)
+    
+    case: Mapped["Case"] = relationship(back_populates="case_presents")
+    present: Mapped["Present"] = relationship(back_populates="case_presents")
+    
+    __table_args__ = (
+        UniqueConstraint('case_id', 'present_id', name='_case_present_uc'),
+        CheckConstraint('probability > 0 AND probability <= 100', name='check_probability_range'),
+    )
+
+    def __repr__(self):
+        return f"<CasePresent(case_id={self.case_id}, present_id={self.present_id}, probability={self.probability})>"
+
+
 class DatabaseManager:
     def __init__(self, database_url: str):
-        # Настройки для PostgreSQL
         if "postgresql" in database_url:
             self.engine = create_async_engine(
                 database_url, 
-                echo=False,  # Отключаем логи SQL в продакшене
+                echo=False, 
                 pool_size=10,
                 max_overflow=20,
                 pool_pre_ping=True,
                 pool_recycle=3600
             )
         else:
-            # Настройки для SQLite
             self.engine = create_async_engine(database_url, echo=True)
             
         self.async_session = async_sessionmaker(
@@ -66,20 +114,17 @@ class DatabaseManager:
         """Добавление пользователя в базу данных"""
         try:
             async with self.async_session() as session:
-                # Проверяем, существует ли пользователь
                 stmt = select(User).where(User.user_id == user_id)
                 result = await session.execute(stmt)
                 existing_user = result.scalar_one_or_none()
 
                 if existing_user:
-                    # Обновляем username если он изменился
                     if username and existing_user.username != username:
                         existing_user.username = username
                         await session.commit()
                         print(f"🔄 Username пользователя {user_id} обновлен на {username}")
                     return True
 
-                # Создаем нового пользователя
                 new_user = User(
                     user_id=user_id,
                     username=username,
