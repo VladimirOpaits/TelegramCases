@@ -8,6 +8,7 @@ from pydantic import BaseModel
 import uvicorn
 import os
 from contextlib import asynccontextmanager
+from dependencies import get_current_user, get_current_user_id
 
 try:
   from faststream.rabbit.fastapi import RabbitRouter
@@ -153,7 +154,7 @@ async def get_case(case_id: int):
 
 
 @app.post("/open_case/{case_id}")
-async def open_case(case_id: int, user_id: int):
+async def open_case(case_id: int, user_id: int = Depends(get_current_user_id)):
     """Открыть кейс (требует оплаты фантиками)"""
     try:
         case = await case_manager.repository.get_case(case_id)
@@ -215,38 +216,51 @@ async def open_case(case_id: int, user_id: int):
 
 
 @app.post("/fantics/add")
-async def add_fantics(transaction: FanticsTransaction):
-  """Добавить фантики пользователю"""
-  if transaction.amount <= 0:
-      raise HTTPException(status_code=400, detail="Сумма должна быть положительной")
+async def add_fantics(
+    transaction: FanticsTransaction,
+    current_user_id: int = Depends(get_current_user_id)
+):
+    """Добавить фантики пользователю (только для себя)"""
+    if transaction.user_id != current_user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Вы можете добавлять фантики только себе"
+        )
+      
+    if transaction.amount <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Сумма должна быть положительной"
+        )
 
-  user_id = transaction.user_id
-  
-  user = await db_manager.get_user(user_id)
-  if not user:
-      await db_manager.add_user(user_id)
+    user = await db_manager.get_user(transaction.user_id)
+    if not user:
+        await db_manager.add_user(transaction.user_id)
 
-  if use_rabbitmq and router:
-      await router.broker.publish(
-          {
-              "user_id": user_id,
-              "amount": transaction.amount,
-              "action": "add",
-              "reason": "manual_deposit"
-          },
-          queue="transactions",
-      )
-      message = f"Запрос на добавление {transaction.amount} фантиков отправлен в очередь"
-      print(f"🐰 {message}")
-  else:
-      success = await db_manager.add_fantics(user_id, transaction.amount)
-      message = f"Добавлено {transaction.amount} фантиков" if success else "Ошибка добавления фантиков"
-      print(f"⚡ {message}")
-  
-  return {
-      "status": "ok",
-      "message": message
-  }
+    if use_rabbitmq and router:
+        await router.broker.publish(
+            {
+                "user_id": transaction.user_id,
+                "amount": transaction.amount,
+                "action": "add",
+                "reason": "manual_deposit",
+                "initiator": current_user_id 
+            },
+            queue="transactions",
+        )
+        message = f"Запрос на добавление {transaction.amount} фантиков отправлен в очередь"
+        print(f"🐰 {message}")
+    else:
+        success = await db_manager.add_fantics(transaction.user_id, transaction.amount)
+        message = f"Добавлено {transaction.amount} фантиков" if success else "Ошибка добавления фантиков"
+        print(f"⚡ {message}")
+    
+    return {
+        "status": "ok",
+        "message": message,
+        "user_id": transaction.user_id,
+        "amount": transaction.amount
+    }
 
 @app.get("/fantics/{user_id}")
 async def get_user_fantics(user_id: int):
