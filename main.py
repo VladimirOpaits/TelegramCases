@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from database import DatabaseManager
-from Cases import get_random_gift, get_case_info, get_all_cases_info, CaseRepository
+from Cases import CaseManager
 from config import DATABASE_URL, CORS_ORIGINS, API_HOST, API_PORT, RABBITMQ_URL, DEV_MODE
 from pydantic import BaseModel
 import uvicorn
@@ -35,9 +35,9 @@ else:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Запуск API сервера...")
-    print(f"🔒 CORS настройки: {CORS_ORIGINS}")
     try:
-        await db_manager.init_db()
+        await db_manager.init_db()        
+        await case_manager.initialize()
         print("✅ База данных инициализирована")
         
         if use_rabbitmq and router:
@@ -48,8 +48,6 @@ async def lifespan(app: FastAPI):
             await db_manager.add_user(123456, "demo_user")
             await db_manager.set_fantics(123456, 50000)
             print("🎮 Демо пользователь создан с 50000 фантиков")
-            
-        print(f"📊 Доступно кейсов: {len(CaseRepository.get_all_cases())}")
         
         if use_rabbitmq:
             print("🐰 RabbitMQ готов к работе")
@@ -87,6 +85,7 @@ except Exception as e:
   print(f"⚠️ Статические файлы не найдены: {e}")
 
 db_manager = DatabaseManager(DATABASE_URL)
+case_manager = CaseManager(db_manager)
 
 class FanticsTransaction(BaseModel):
   user_id: int
@@ -105,21 +104,6 @@ async def root():
       "cors_origins": CORS_ORIGINS
   }
 
-@app.get("/health")
-async def health_check():
-  try:
-      count = await db_manager.get_users_count()
-      return {
-          "status": "healthy", 
-          "database": "connected", 
-          "users_count": count,
-          "cases_count": len(CaseRepository.get_all_cases()),
-          "dev_mode": DEV_MODE,
-          "rabbitmq": use_rabbitmq,
-          "cors_test": "OK"
-      }
-  except Exception as e:
-      return {"status": "error", "database": "disconnected", "error": str(e)}
 
 @app.options("/{path:path}")
 async def options_handler(path: str):
@@ -130,9 +114,19 @@ async def options_handler(path: str):
 async def get_cases():
   """Получить все доступные кейсы"""
   try:
-      cases = get_all_cases_info()
-      print(f"📦 Отправлено {len(cases)} кейсов")
-      return cases
+      cases = await case_manager.repository.get_all_cases()
+
+      cases_list = [{
+            "id": case.id,
+            "name": case.name,
+            "cost": case.cost,
+            "presents": [{"cost": p.cost, "probability": prob} 
+                        for p, prob in case.presents_with_probabilities],
+            "created_at": case.created_at.isoformat() if case.created_at else None,
+            "updated_at": case.updated_at.isoformat() if case.updated_at else None
+        } for case in cases.values()]
+          
+      return cases_list
   except Exception as e:
       print(f"❌ Ошибка получения кейсов: {e}")
       raise HTTPException(status_code=500, detail=f"Ошибка получения кейсов: {str(e)}")
@@ -141,8 +135,18 @@ async def get_cases():
 async def get_case(case_id: int):
   """Получить информацию о конкретном кейсе"""
   try:
-      case_info = get_case_info(case_id)
-      return case_info
+      case = await case_manager.repository.get_case(case_id=case_id)
+      if not case:
+         raise HTTPException(status_code=404, detail="Не нашли кейс, лол")
+      return {
+         "id": case.id,
+         "name": case.name,
+         "cost": case.cost,
+         "presents": [{"cost": p.cost, "probability": prob}
+                      for p, prob in case.presents_with_probabilities],
+         "created_at": case.created_at.isoformat() if case.created_at else None,
+         "updated_at": case.updated_at.isoformat() if case.updated_at else None
+      }
   except ValueError as e:
       raise HTTPException(status_code=404, detail=str(e))
 
@@ -152,13 +156,12 @@ async def get_case(case_id: int):
 async def open_case(case_id: int, user_id: int):
     """Открыть кейс (требует оплаты фантиками)"""
     try:
-        case_info = get_case_info(case_id)
-        case_cost = case_info["cost"]
+        case = await case_manager.repository.get_case(case_id)
+        if not case:
+           raise HTTPException(status_code=404, detail="Нема такого кейсика")
+        case_cost = case.cost
 
-        current_balance = await db_manager.get_fantics(user_id)
-        if current_balance is None:
-            await db_manager.add_user(user_id)
-            current_balance = 0
+        current_balance = await db_manager.get_fantics(user_id) or 0
 
         if current_balance < case_cost:
             raise HTTPException(
@@ -166,7 +169,7 @@ async def open_case(case_id: int, user_id: int):
                 detail=f"Недостаточно фантиков. Требуется: {case_cost}, доступно: {current_balance}"
             )
 
-        gift = get_random_gift(case_id)
+        gift = case.get_random_present()
 
         await db_manager.subtract_fantics(user_id, case_cost)
         await db_manager.add_fantics(user_id, gift.cost)
