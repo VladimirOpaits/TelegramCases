@@ -174,16 +174,15 @@ async def open_case(case_id: int, user_id: int = Depends(get_current_user_id)):
 
     gift = case.get_random_present()
 
-    await db_manager.subtract_fantics(user_id, case_cost)
-    await db_manager.add_fantics(user_id, gift.cost)
-
+    # --- ИЗМЕНЕННАЯ ЛОГИКА ЗДЕСЬ ---
     if use_rabbitmq and router:
+      # Если RabbitMQ используется, отправляем транзакции в очередь
       await router.broker.publish(
         {
           "user_id": user_id,
           "amount": case_cost,
           "action": "spend",
-          "reason": f"open_case_{case_id}"
+          "reason": f"open_case_cost_{case_id}" # Более конкретная причина
         },
         queue="transactions",
       )
@@ -193,11 +192,16 @@ async def open_case(case_id: int, user_id: int = Depends(get_current_user_id)):
           "user_id": user_id,
           "amount": gift.cost,
           "action": "add",
-          "reason": f"case_win_{case_id}"
+          "reason": f"case_win_gift_{case_id}" # Более конкретная причина
         },
         queue="transactions",
       )
       print(f"🐰 Транзакции отправлены в RabbitMQ для пользователя {user_id}")
+    else:
+      # Если RabbitMQ НЕ используется, обновляем базу данных напрямую
+      await db_manager.subtract_fantics(user_id, case_cost)
+      await db_manager.add_fantics(user_id, gift.cost)
+      print(f"⚡ Прямые транзакции выполнены для пользователя {user_id}")
 
     print(f"🎰 Пользователь {user_id} открыл кейс {case_id}: потратил {case_cost}, выиграл {gift.cost}")
 
