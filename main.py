@@ -226,7 +226,7 @@ async def add_fantics(
             status_code=403,
             detail="Вы можете добавлять фантики только себе"
         )
-      
+
     if transaction.amount <= 0:
         raise HTTPException(
             status_code=400,
@@ -263,15 +263,24 @@ async def add_fantics(
     }
 
 @app.get("/fantics/{user_id}")
-async def get_user_fantics(user_id: int):
-  """Получить баланс фантиков пользователя"""
-  fantics = await db_manager.get_fantics(user_id)
-  if fantics is None:
-      await db_manager.add_user(user_id)
-      fantics = 0
-  
-  print(f"💎 Баланс пользователя {user_id}: {fantics}")
-  return {"user_id": user_id, "fantics": fantics}
+async def get_user_fantics(
+    user_id: int,
+    current_user_id: int = Depends(get_current_user_id)
+):
+    """Получить баланс фантиков (только свой)"""
+    if user_id != current_user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Вы можете просматривать только свой баланс"
+        )
+    
+    fantics = await db_manager.get_fantics(user_id)
+    if fantics is None:
+        await db_manager.add_user(user_id)
+        fantics = 0
+
+    print(f"У {user_id} {fantics} ебанных фантиков")
+    return {"user_id": user_id, "fantics": fantics}
 
 if use_rabbitmq and router:
   @router.subscriber("transactions")
