@@ -333,12 +333,7 @@ if use_rabbitmq and router:
 
 if __name__ == "__main__":
   print(f"🌐 Запуск сервера на http://{API_HOST}:{API_PORT}")
-  print(f"🔧 Режим: {'Продакшн' if not DEV_MODE else 'Разработка'}")
-  print(
-    f"🗄️ База данных: {'Neon PostgreSQL' if 'neon' in DATABASE_URL else 'PostgreSQL' if 'postgresql' in DATABASE_URL else 'SQLite'}")
+  print(f"🗄️ База данных: {'Neon PostgreSQL' if 'neon' in DATABASE_URL else 'PostgreSQL' if 'postgresql' in DATABASE_URL else 'SQLite'}")
   print(f"🐰 RabbitMQ: {'Включен' if use_rabbitmq else 'Отключен'}")
+  uvicorn.run("main:app", host=API_HOST, port=API_PORT)
 
-  if not DEV_MODE:
-    uvicorn.run("main:app", host=API_HOST, port=API_PORT)
-  else:
-    uvicorn.run(app, host=API_HOST, port=API_PORT, reload=True)
