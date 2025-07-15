@@ -1,3 +1,4 @@
+import logging
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -12,6 +13,14 @@ from dependencies import get_current_user, get_current_user_id
 from pytonconnect import TonConnect
 from ton_wallet_manager import TonWalletManager, TonWalletRequest, TonWalletResponse
 
+if DEV_MODE:
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        force=True  
+    )
+    print("🔧 Логирование настроено в DEBUG режиме")
+
 try:
   from faststream.rabbit.fastapi import RabbitRouter
 
@@ -24,7 +33,7 @@ use_rabbitmq = False
 router = None
 broker = None
 
-if RABBITMQ_AVAILABLE and RABBITMQ_URL and not DEV_MODE:
+if RABBITMQ_AVAILABLE and RABBITMQ_URL:
   print("🐰 Подключение к RabbitMQ:", RABBITMQ_URL.split('@')[1] if '@' in RABBITMQ_URL else RABBITMQ_URL)
   try:
     router = RabbitRouter(RABBITMQ_URL)
