@@ -13,13 +13,12 @@ from dependencies import get_current_user, get_current_user_id
 from pytonconnect import TonConnect
 from ton_wallet_manager import TonWalletManager, TonWalletRequest, TonWalletResponse
 
-if DEV_MODE:
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        force=True  
-    )
-    print("🔧 Логирование настроено в DEBUG режиме")
+logging.basicConfig(
+  level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    force=True  
+)
+print("🔧 Логирование настроено в DEBUG режиме")
 
 try:
   from faststream.rabbit.fastapi import RabbitRouter
