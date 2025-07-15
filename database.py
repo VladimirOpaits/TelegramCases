@@ -18,16 +18,40 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(255), nullable=True)
     registration_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     fantics: Mapped[int] = mapped_column(Integer,
-                                         nullable=False,
-                                         default=0,
-                                         server_default="0")
+                                       nullable=False,
+                                       default=0,
+                                       server_default="0")
 
     __table_args__ = (
         CheckConstraint('fantics >= 0', name='check_fantics_positive'),
     )
 
+    ton_wallets: Mapped[List["TonWallet"]] = relationship(
+        back_populates="user", 
+        cascade="all, delete-orphan"
+    )
+
     def __repr__(self):
         return f"<User(id={self.id}, user_id={self.user_id}, username='{self.username}', fantics='{self.fantics}')>"
+
+
+class TonWallet(Base):
+    __tablename__ = "ton_wallets"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"))
+    wallet_address: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    is_active: Mapped[bool] = mapped_column(default=True)
+    
+    user: Mapped["User"] = relationship(back_populates="ton_wallets")
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'wallet_address', name='_user_wallet_uc'),
+    )
+
+    def __repr__(self):
+        return f"<TonWallet(id={self.id}, user_id={self.user_id}, address='{self.wallet_address}')>"
 
 
 class Case(Base):
@@ -110,6 +134,8 @@ class DatabaseManager:
             print(f"❌ Ошибка инициализации БД: {e}")
             raise
 
+    # ========== МЕТОДЫ ДЛЯ РАБОТЫ С ПОЛЬЗОВАТЕЛЯМИ ==========
+    
     async def add_user(self, user_id: int, username: Optional[str] = None) -> bool:
         """Добавление пользователя в базу данных"""
         try:
@@ -290,6 +316,135 @@ class DatabaseManager:
                     return False
         except Exception as e:
             print(f"❌ Ошибка при установке фантиков: {e}")
+            return False
+        
+    # ========== МЕТОДЫ ДЛЯ РАБОТЫ С TON КОШЕЛЬКАМИ ==========
+    async def add_ton_wallet(self, user_id: int, wallet_address: str) -> bool:
+        """
+        Добавление TON кошелька для пользователя
+        :param user_id: ID пользователя в Telegram
+        :param wallet_address: Адрес кошелька в сети TON
+        :return: True если успешно, False если ошибка
+        """
+        try:
+            async with self.async_session() as session:
+                # Проверяем существование пользователя
+                user = await self.get_user(user_id)
+                if not user:
+                    print(f"❌ Пользователь {user_id} не найден")
+                    return False
+                
+                # Проверяем, не привязан ли уже этот кошелек
+                stmt = select(TonWallet).where(
+                    (TonWallet.wallet_address == wallet_address)
+                )
+                result = await session.execute(stmt)
+                existing_wallet = result.scalar_one_or_none()
+                
+                if existing_wallet:
+                    print(f"⚠️ Кошелек {wallet_address} уже привязан к пользователю {existing_wallet.user_id}")
+                    return False
+                
+                # Создаем новый кошелек
+                new_wallet = TonWallet(
+                    user_id=user_id,
+                    wallet_address=wallet_address
+                )
+                
+                session.add(new_wallet)
+                await session.commit()
+                print(f"➕ Кошелек {wallet_address} успешно привязан к пользователю {user_id}")
+                return True
+                
+        except Exception as e:
+            print(f"❌ Ошибка при добавлении TON кошелька: {e}")
+            return False
+
+    async def get_user_ton_wallets(self, user_id: int) -> List[TonWallet]:
+        """
+        Получение всех TON кошельков пользователя
+        :param user_id: ID пользователя в Telegram
+        :return: Список кошельков или пустой список
+        """
+        try:
+            async with self.async_session() as session:
+                stmt = select(TonWallet).where(
+                    (TonWallet.user_id == user_id) &
+                    (TonWallet.is_active == True)
+                )
+                result = await session.execute(stmt)
+                return list(result.scalars().all())
+        except Exception as e:
+            print(f"❌ Ошибка при получении TON кошельков: {e}")
+            return []
+
+    async def get_ton_wallet_by_address(self, wallet_address: str) -> Optional[TonWallet]:
+        """
+        Получение кошелька по адресу
+        :param wallet_address: Адрес кошелька в сети TON
+        :return: Объект TonWallet или None
+        """
+        try:
+            async with self.async_session() as session:
+                stmt = select(TonWallet).where(
+                    (TonWallet.wallet_address == wallet_address)
+                )
+                result = await session.execute(stmt)
+                return result.scalar_one_or_none()
+        except Exception as e:
+            print(f"❌ Ошибка при получении TON кошелька: {e}")
+            return None
+
+    async def deactivate_ton_wallet(self, wallet_address: str) -> bool:
+        """
+        Деактивация TON кошелька (мягкое удаление)
+        :param wallet_address: Адрес кошелька в сети TON
+        :return: True если успешно, False если ошибка
+        """
+        try:
+            async with self.async_session() as session:
+                stmt = select(TonWallet).where(
+                    (TonWallet.wallet_address == wallet_address)
+                )
+                result = await session.execute(stmt)
+                wallet = result.scalar_one_or_none()
+                
+                if wallet:
+                    wallet.is_active = False
+                    await session.commit()
+                    print(f"➖ Кошелек {wallet_address} деактивирован")
+                    return True
+                else:
+                    print(f"❌ Кошелек {wallet_address} не найден")
+                    return False
+        except Exception as e:
+            print(f"❌ Ошибка при деактивации TON кошелька: {e}")
+            return False
+
+    async def reactivate_ton_wallet(self, wallet_address: str) -> bool:
+        """
+        Повторная активация TON кошелька
+        :param wallet_address: Адрес кошелька в сети TON
+        :return: True если успешно, False если ошибка
+        """
+        try:
+            async with self.async_session() as session:
+                stmt = select(TonWallet).where(
+                    (TonWallet.wallet_address == wallet_address)
+                )
+                result = await session.execute(stmt)
+                wallet = result.scalar_one_or_none()
+                
+                if wallet:
+                    wallet.is_active = True
+                    await session.commit()
+                    print(f"🔄 Кошелек {wallet_address} реактивирован")
+                    return True
+                else:
+                    print(f"❌ Кошелек {wallet_address} не найден")
+                    return False
+        except Exception as e:
+            print(f"❌ Ошибка при реактивации TON кошелька: {e}")
             return False
 
     async def close(self):

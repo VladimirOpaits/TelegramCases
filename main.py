@@ -9,6 +9,8 @@ import uvicorn
 import os
 from contextlib import asynccontextmanager
 from dependencies import get_current_user, get_current_user_id
+from pytonconnect import TonConnect
+from ton_wallet_manager import TonWalletManager, TonWalletRequest, TonWalletResponse
 
 try:
   from faststream.rabbit.fastapi import RabbitRouter
@@ -47,11 +49,6 @@ async def lifespan(app: FastAPI):
       await router.broker.connect()
       print("🐰 RabbitMQ брокер подключен")
 
-    if DEV_MODE:
-      await db_manager.add_user(123456, "demo_user")
-      await db_manager.set_fantics(123456, 50000)
-      print("🎮 Демо пользователь создан с 50000 фантиков")
-
     if use_rabbitmq:
       print("🐰 RabbitMQ готов к работе")
     else:
@@ -80,14 +77,15 @@ app.add_middleware(
   expose_headers=["*"]
 )
 
-try:
-  app.mount("/static", StaticFiles(directory="static"), name="static")
-  print("📁 Статические файлы подключены")
-except Exception as e:
-  print(f"⚠️ Статические файлы не найдены: {e}")
+#try:
+#  app.mount("/static", StaticFiles(directory="static"), name="static")
+#  print("📁 Статические файлы подключены")
+#except Exception as e:
+#  print(f"⚠️ Статические файлы не найдены: {e}")
 
 db_manager = DatabaseManager(DATABASE_URL)
 case_manager = CaseManager(db_manager)
+ton_wallet_manager = TonWalletManager(db_manager)
 
 
 class FanticsTransaction(BaseModel):
@@ -174,15 +172,13 @@ async def open_case(case_id: int, user_id: int = Depends(get_current_user_id)):
 
     gift = case.get_random_present()
 
-    # --- ИЗМЕНЕННАЯ ЛОГИКА ЗДЕСЬ ---
     if use_rabbitmq and router:
-      # Если RabbitMQ используется, отправляем транзакции в очередь
       await router.broker.publish(
         {
           "user_id": user_id,
           "amount": case_cost,
           "action": "spend",
-          "reason": f"open_case_cost_{case_id}" # Более конкретная причина
+          "reason": f"open_case_cost_{case_id}" 
         },
         queue="transactions",
       )
@@ -192,13 +188,12 @@ async def open_case(case_id: int, user_id: int = Depends(get_current_user_id)):
           "user_id": user_id,
           "amount": gift.cost,
           "action": "add",
-          "reason": f"case_win_gift_{case_id}" # Более конкретная причина
+          "reason": f"case_win_gift_{case_id}" 
         },
         queue="transactions",
       )
       print(f"🐰 Транзакции отправлены в RabbitMQ для пользователя {user_id}")
     else:
-      # Если RabbitMQ НЕ используется, обновляем базу данных напрямую
       await db_manager.subtract_fantics(user_id, case_cost)
       await db_manager.add_fantics(user_id, gift.cost)
       print(f"⚡ Прямые транзакции выполнены для пользователя {user_id}")
@@ -287,6 +282,14 @@ async def get_user_fantics(
 
   print(f"У {user_id} {fantics} ебанных фантиков")
   return {"user_id": user_id, "fantics": fantics}
+
+@app.post("/ton/connect", response_model=TonWalletResponse)
+async def connect_ton_wallet(
+  wallet_data: TonWalletRequest,
+  current_user_id: int = Depends(get_current_user_id)
+):
+  return await ton_wallet_manager.connect_wallet(wallet_data, current_user_id)
+
 
 
 if use_rabbitmq and router:
