@@ -2,7 +2,9 @@ from fastapi import Depends, HTTPException, Request, Header
 from typing import Optional
 from auth import TelegramAuth
 from config import BOT_TOKEN, DEV_MODE
+import logging
 
+logger = logging.getLogger(__name__)
 telegram_auth = TelegramAuth(BOT_TOKEN)
 
 async def get_current_user(
@@ -29,10 +31,8 @@ async def get_current_user(
     
     try:
         user_data = telegram_auth.validate_init_data(init_data)
-        
-        if DEV_MODE:
-            user_id = user_data.get('id') or user_data.get('user', {}).get('id')
-            print(f"🔐 User authenticated: ID = {user_id}")
+        user_id = user_data.get('id') or user_data.get('user', {}).get('id')
+        logger.info(f"🔐 User authenticated: ID = {user_id}")   
         
         return user_data
     except Exception as e:
