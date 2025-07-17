@@ -85,12 +85,6 @@ app.add_middleware(
   expose_headers=["*"]
 )
 
-#try:
-#  app.mount("/static", StaticFiles(directory="static"), name="static")
-#  print("📁 Статические файлы подключены")
-#except Exception as e:
-#  print(f"⚠️ Статические файлы не найдены: {e}")
-
 db_manager = DatabaseManager(DATABASE_URL)
 case_manager = CaseManager(db_manager)
 ton_wallet_manager = TonWalletManager(db_manager)

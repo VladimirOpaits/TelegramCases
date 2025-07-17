@@ -27,8 +27,11 @@ if BOT_TOKEN is not None:
     BOT_TOKEN = str(BOT_TOKEN)
 WEB_APP_URL = os.getenv("WEB_APP_URL")
 
+TON_TESTNET = os.getenv("TON_TESTNET", "true").lower() == "true"
+
 print(f"🔧 Режим разработки: {DEV_MODE}")
 print(f"🌐 Web App URL: {WEB_APP_URL}")
 print(f"🔒 CORS Origins: {CORS_ORIGINS}")
 print(f"🗄️ Database: {'Neon' if 'neon' in str(DATABASE_URL) else 'PostgreSQL' if 'postgresql' in str(DATABASE_URL) else 'SQLite'}")
 print(f"🐰 RabbitMQ: {'CloudAMQP' if RABBITMQ_URL and 'cloudamqp' in RABBITMQ_URL else 'Local' if RABBITMQ_URL else 'Отключен'}")
+print(f"🌐 TON Network: {'TESTNET' if TON_TESTNET else 'MAINNET'}")

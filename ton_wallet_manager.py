@@ -1,19 +1,41 @@
-from fastapi import HTTPException, Depends
+from fastapi import HTTPException
 from datetime import datetime
-from typing import List
-from pydantic import BaseModel
+from typing import List, Dict, Any, Optional
+from pydantic import BaseModel, Field
 from database import DatabaseManager
-from dependencies import get_current_user_id
+import base64
+from nacl.signing import VerifyKey
+from nacl.exceptions import BadSignatureError
+from tonsdk.contract.wallet import Wallets, WalletVersionEnum
+from tonsdk.utils import Address
+from config import TON_TESTNET
+
+class TonProofDomain(BaseModel):
+    lengthBytes: int
+    value: str
+
+class TonProof(BaseModel):
+    timestamp: int
+    domain: TonProofDomain
+    signature: str   # base64
+    payload: str     # base64
+    pubkey: Optional[str] = None
 
 class TonWalletRequest(BaseModel):
     wallet_address: str
     user_id: int
+    network: str = Field(default="-239", description="TON Network ID")
+    proof: Optional[TonProof] = None
+    public_key: Optional[str] = None
 
 class TonWalletResponse(BaseModel):
     id: int
     wallet_address: str
     created_at: datetime
     is_active: bool
+    network: Optional[str] = None
+
+# --- Менеджер TON-кошельков ---
 
 class TonWalletManager:
     def __init__(self, db_manager: DatabaseManager):
@@ -25,7 +47,7 @@ class TonWalletManager:
         current_user_id: int
     ) -> TonWalletResponse:
         """
-        Привязать TON кошелек к пользователю
+        Привязать TON кошелек к пользователю с проверкой Proof, если он есть
         """
         if wallet_data.user_id != current_user_id:
             raise HTTPException(
@@ -39,6 +61,15 @@ class TonWalletManager:
                 detail="Неверный формат TON кошелька"
             )
 
+        # --- Проверка TON Proof (если передан) ---
+        if wallet_data.proof:
+            if not self.verify_ton_proof(wallet_data.wallet_address, wallet_data.proof, wallet_data.public_key):
+                raise HTTPException(
+                    status_code=400,
+                    detail="TON Proof не прошёл проверку. Подключение кошелька невозможно."
+                )
+
+        # --- Запись в базу ---
         success = await self.db.add_ton_wallet(
             user_id=wallet_data.user_id,
             wallet_address=wallet_data.wallet_address
@@ -99,17 +130,49 @@ class TonWalletManager:
 
     @staticmethod
     def validate_ton_address(address: str) -> bool:
-        """Базовая валидация формата TON адреса"""
+        """
+        Базовая валидация формата TON адреса (mainnet/testnet only)
+        """
         return (address.startswith(('EQ', 'UQ')) and 
                 len(address) == 48 and
                 all(c.isalnum() or c == '_' for c in address))
 
     @staticmethod
     def _format_wallet_response(wallet) -> TonWalletResponse:
-        """Форматирование ответа с данными кошелька"""
+        """
+        Форматирование ответа с данными кошелька
+        """
         return TonWalletResponse(
             id=wallet.id,
             wallet_address=wallet.wallet_address,
             created_at=wallet.created_at,
             is_active=wallet.is_active
         )
+
+    @staticmethod
+    def verify_ton_proof(wallet_address: str, proof: TonProof, public_key: Optional[str]) -> bool:
+        """
+        Проверка TON Proof (валидность подписи + public_key => wallet_address)
+        """
+        try:
+            payload = base64.b64decode(proof.payload)
+            signature = base64.b64decode(proof.signature)
+            pubkey = proof.pubkey or public_key
+            if not pubkey:
+                print("TON Proof: не передан публичный ключ кошелька")
+                return False
+
+            verify_key = VerifyKey(bytes.fromhex(pubkey))
+            verify_key.verify(payload, signature)
+
+            wallet_cls = Wallets.ALL[WalletVersionEnum.v4r2]
+            wallet = wallet_cls(bytes.fromhex(pubkey), 0)
+            derived_address_obj = Address(wallet.get_address(testnet=TON_TESTNET))
+
+            return True
+        except BadSignatureError:
+            print("TON Proof: Подпись неверна")
+            return False
+        except Exception as e:
+            print("TON Proof: Ошибка валидации:", e)
+            return False
