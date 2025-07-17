@@ -56,3 +56,5 @@ pytonconnect==0.3.2
 uvicorn==0.24.0
 Werkzeug==3.1.3
 yarl==1.20.1
+tonsdk==0.43.0
+nacl==1.6.0
