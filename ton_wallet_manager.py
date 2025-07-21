@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from database import DatabaseManager
 import base64
+import re
 from nacl.signing import VerifyKey
 from nacl.exceptions import BadSignatureError
 from tonsdk.contract.wallet import Wallets, WalletVersionEnum
@@ -131,11 +132,20 @@ class TonWalletManager:
     @staticmethod
     def validate_ton_address(address: str) -> bool:
         """
-        Базовая валидация формата TON адреса (mainnet/testnet only)
+        Валидация формата TON адреса (user-friendly формат)
+        Поддерживает EQ (mainnet) и UQ (testnet) адреса
         """
-        return (address.startswith(('EQ', 'UQ')) and 
-                len(address) == 48 and
-                all(c.isalnum() or c == '_' for c in address))
+        if not isinstance(address, str):
+            return False
+            
+        pattern = r'^(EQ|UQ)[A-Za-z0-9_-]{46}$'
+        if re.match(pattern, address):
+            return True
+            
+        if address.startswith('0:') and len(address) == 67:
+            return True
+            
+        return False
 
     @staticmethod
     def _format_wallet_response(wallet) -> TonWalletResponse:

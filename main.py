@@ -287,7 +287,7 @@ async def get_user_fantics(
 
 @app.post("/ton/connect", response_model=TonWalletResponse)
 async def connect_ton_wallet(
-  wallet_data: TonWalletRequest,
+  wallet_data: TonWalletRequest,  
   current_user_id: int = Depends(get_current_user_id)
 ):
   return await ton_wallet_manager.connect_wallet(wallet_data, current_user_id)
