@@ -131,21 +131,14 @@ class TonWalletManager:
 
     @staticmethod
     def validate_ton_address(address: str) -> bool:
-        """
-        Валидация формата TON адреса (user-friendly формат)
-        Поддерживает EQ (mainnet) и UQ (testnet) адреса
-        """
-        if not isinstance(address, str):
-            return False
-            
-        pattern = r'^(EQ|UQ)[A-Za-z0-9_-]{46}$'
-        if re.match(pattern, address):
-            return True
-            
-        if address.startswith('0:') and len(address) == 67:
-            return True
-            
-        return False
+        """Поддержка обоих форматов: raw (0:) и user-friendly (EQ/UQ)"""
+        if address.startswith('0:'):
+            parts = address.split(':')
+            return len(parts) == 2 and all(c.isalnum() or c == '_' for c in parts[1])
+
+        return (address.startswith(('EQ', 'UQ')) 
+            and len(address) == 48 
+            and all(c.isalnum() or c in {'-', '_'} for c in address))
 
     @staticmethod
     def _format_wallet_response(wallet) -> TonWalletResponse:
