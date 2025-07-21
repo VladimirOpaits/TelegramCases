@@ -1,5 +1,5 @@
 import logging
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from database import DatabaseManager
@@ -8,6 +8,7 @@ from config import DATABASE_URL, CORS_ORIGINS, API_HOST, API_PORT, RABBITMQ_URL,
 from pydantic import BaseModel
 import uvicorn
 import os
+import json
 from contextlib import asynccontextmanager
 from dependencies import get_current_user, get_current_user_id
 from pytonconnect import TonConnect
@@ -285,12 +286,45 @@ async def get_user_fantics(
   print(f"У {user_id} {fantics} ебанных фантиков")
   return {"user_id": user_id, "fantics": fantics}
 
+@app.middleware("http")           # Фигня для логирования
+async def log_requests(request: Request, call_next):
+    if request.url.path == "/ton/connect" and request.method == "POST":
+        body = await request.body()
+        try:
+            body_json = json.loads(body.decode())
+            print("=== ВХОДЯЩИЙ ЗАПРОС ===")
+            print(f"Headers: {dict(request.headers)}")
+            print(f"Body: {json.dumps(body_json, indent=2)}")
+        except Exception as e:
+            print(f"Ошибка парсинга body: {e}")
+            print(f"Raw body: {body}")
+        
+        async def receive():
+            return {"type": "http.request", "body": body}
+        request._receive = receive
+    
+    response = await call_next(request)
+    return response
+
 @app.post("/ton/connect", response_model=TonWalletResponse)
 async def connect_ton_wallet(
-  wallet_data: TonWalletRequest,  
-  current_user_id: int = Depends(get_current_user_id)
+    wallet_data: TonWalletRequest,  
+    current_user_id: int = Depends(get_current_user_id)
 ):
-  return await ton_wallet_manager.connect_wallet(wallet_data, current_user_id)
+    print("=== ОБРАБОТКА TON CONNECT ===")
+    print(f"Parsed wallet_data: {wallet_data}")
+    print(f"Current user ID: {current_user_id}")
+    
+    try:
+        result = await ton_wallet_manager.connect_wallet(wallet_data, current_user_id)
+        print(f"Успешный результат: {result}")
+        return result
+    except HTTPException as e:
+        print(f"HTTPException: {e.status_code} - {e.detail}")
+        raise
+    except Exception as e:
+        print(f"Неожиданная ошибка: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 
