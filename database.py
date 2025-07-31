@@ -115,7 +115,9 @@ class DatabaseManager:
                 pool_size=10,
                 max_overflow=20,
                 pool_pre_ping=True,
-                pool_recycle=3600
+                pool_recycle=3600,
+                # Отключаем логирование SQL запросов
+                logging_name=None
             )
         else:
             self.engine = create_async_engine(database_url, echo=True)
@@ -151,7 +153,9 @@ class DatabaseManager:
                     pool_size=10,
                     max_overflow=20,
                     pool_pre_ping=True,
-                    pool_recycle=3600
+                    pool_recycle=3600,
+                    # Отключаем логирование SQL запросов
+                    logging_name=None
                 )
             else:
                 self.engine = create_async_engine(self.engine.url, echo=True)
@@ -351,13 +355,14 @@ class DatabaseManager:
             return False
         
     # ========== МЕТОДЫ ДЛЯ РАБОТЫ С TON КОШЕЛЬКАМИ ==========
-    async def add_ton_wallet(self, user_id: int, wallet_address: str, network: Optional[str] = None, public_key: Optional[str] = None) -> bool:
+    async def add_ton_wallet(self, user_id: int, wallet_address: str, network: Optional[str] = None, public_key: Optional[str] = None, retry_count: int = 0) -> bool:
         """
         Добавление TON кошелька для пользователя
         :param user_id: ID пользователя в Telegram
         :param wallet_address: Адрес кошелька в сети TON
         :param network: Сеть кошелька (например, "-239")
         :param public_key: Публичный ключ кошелька в hex формате
+        :param retry_count: Счетчик повторных попыток (для предотвращения рекурсии)
         :return: True если успешно, False если ошибка
         """
         try:
@@ -395,13 +400,13 @@ class DatabaseManager:
         except Exception as e:
             print(f"❌ Ошибка при добавлении TON кошелька: {e}")
             
-            # Проверяем, является ли это ошибкой кэша
-            if "InvalidCachedStatementError" in str(e) or "cached statement plan is invalid" in str(e):
+            # Проверяем, является ли это ошибкой кэша и не превышен ли лимит повторных попыток
+            if ("InvalidCachedStatementError" in str(e) or "cached statement plan is invalid" in str(e)) and retry_count < 1:
                 print("🔄 Обнаружена ошибка кэша SQLAlchemy, очищаем кэш...")
                 try:
                     await self.clear_cache_and_reconnect()
                     # Повторяем попытку после очистки кэша
-                    return await self.add_ton_wallet(user_id, wallet_address, network, public_key)
+                    return await self.add_ton_wallet(user_id, wallet_address, network, public_key, retry_count + 1)
                 except Exception as retry_error:
                     print(f"❌ Ошибка при повторной попытке: {retry_error}")
                     return False
@@ -426,10 +431,11 @@ class DatabaseManager:
             print(f"❌ Ошибка при получении TON кошельков: {e}")
             return []
 
-    async def get_ton_wallet_by_address(self, wallet_address: str) -> Optional[TonWallet]:
+    async def get_ton_wallet_by_address(self, wallet_address: str, retry_count: int = 0) -> Optional[TonWallet]:
         """
         Получение кошелька по адресу
         :param wallet_address: Адрес кошелька в сети TON
+        :param retry_count: Счетчик повторных попыток (для предотвращения рекурсии)
         :return: Объект TonWallet или None
         """
         try:
@@ -442,13 +448,13 @@ class DatabaseManager:
         except Exception as e:
             print(f"❌ Ошибка при получении TON кошелька: {e}")
             
-            # Проверяем, является ли это ошибкой кэша
-            if "InvalidCachedStatementError" in str(e) or "cached statement plan is invalid" in str(e):
+            # Проверяем, является ли это ошибкой кэша и не превышен ли лимит повторных попыток
+            if ("InvalidCachedStatementError" in str(e) or "cached statement plan is invalid" in str(e)) and retry_count < 1:
                 print("🔄 Обнаружена ошибка кэша SQLAlchemy, очищаем кэш...")
                 try:
                     await self.clear_cache_and_reconnect()
                     # Повторяем попытку после очистки кэша
-                    return await self.get_ton_wallet_by_address(wallet_address)
+                    return await self.get_ton_wallet_by_address(wallet_address, retry_count + 1)
                 except Exception as retry_error:
                     print(f"❌ Ошибка при повторной попытке: {retry_error}")
                     return None
