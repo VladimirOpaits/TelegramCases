@@ -1,4 +1,5 @@
 import logging
+import base64
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -357,10 +358,13 @@ async def create_topup_payload(
         # Создаем комментарий для транзакции
         comment = f"Пополнение счета на {request.amount} фантиков (ID: {current_user_id})"
         
+        # Кодируем payload в base64 для совместимости с TON блокчейном
+        payload_base64 = base64.b64encode(comment.encode('utf-8')).decode('utf-8')
+        
         return TopUpPayload(
             amount=ton_amount,
             destination=destination_wallet,
-            payload=comment,  # Используем комментарий как payload
+            payload=payload_base64,  # Используем base64 закодированный payload
             comment=comment
         )
         
