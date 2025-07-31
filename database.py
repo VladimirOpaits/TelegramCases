@@ -40,7 +40,7 @@ class TonWallet(Base):
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"))
-    wallet_address: Mapped[str] = mapped_column(String(48), nullable=False, unique=True)
+    wallet_address: Mapped[str] = mapped_column(String(67), nullable=False, unique=True)
     network: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)  # -239, 0, etc.
     public_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # Public key в hex
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
