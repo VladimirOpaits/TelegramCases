@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from dependencies import get_current_user, get_current_user_id
 from pytonconnect import TonConnect
 from ton_wallet_manager import TonWalletManager, TonWalletRequest, TonWalletResponse
-from typing import Optional
+from typing import Optional, List
 
 logging.basicConfig(
   level=logging.DEBUG,
@@ -318,6 +318,18 @@ async def log_requests(request: Request, call_next):
     response = await call_next(request)
     return response
 
+@app.get("/ton/wallets", response_model=List[TonWalletResponse])
+async def get_user_ton_wallets(current_user_id: int = Depends(get_current_user_id)):
+    """Получение всех TON кошельков пользователя"""
+    try:
+        return await ton_wallet_manager.get_user_wallets(current_user_id, current_user_id)
+    except HTTPException as e:
+        print(f"HTTPException: {e.status_code} - {e.detail}")
+        raise
+    except Exception as e:
+        print(f"Неожиданная ошибка: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/ton/connect", response_model=TonWalletResponse)
 async def connect_ton_wallet(
     wallet_data: TonWalletRequest,  
@@ -358,13 +370,11 @@ async def create_topup_payload(
         # Создаем комментарий для транзакции
         comment = f"Пополнение счета на {request.amount} фантиков (ID: {current_user_id})"
         
-        # Кодируем payload в base64 для совместимости с TON блокчейном
-        payload_base64 = base64.b64encode(comment.encode('utf-8')).decode('utf-8')
-        
+        # Используем простой текстовый payload
         return TopUpPayload(
             amount=ton_amount,
             destination=destination_wallet,
-            payload=payload_base64,  # Используем base64 закодированный payload
+            payload=comment,  # Используем простой текстовый payload
             comment=comment
         )
         

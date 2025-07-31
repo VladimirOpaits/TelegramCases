@@ -62,6 +62,18 @@ class TonWalletManager:
                 detail="Неверный формат TON кошелька"
             )
 
+        # --- Проверяем, не существует ли уже этот кошелек ---
+        existing_wallet = await self.db.get_ton_wallet_by_address(wallet_data.wallet_address)
+        if existing_wallet:
+            if existing_wallet.user_id == current_user_id:
+                # Кошелек уже принадлежит этому пользователю
+                return self._format_wallet_response(existing_wallet)
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Этот кошелек уже подключен к другому пользователю"
+                )
+
         # --- Проверка TON Proof (если передан) ---
         if wallet_data.proof:
             if not self.verify_ton_proof(wallet_data.wallet_address, wallet_data.proof, wallet_data.public_key):
