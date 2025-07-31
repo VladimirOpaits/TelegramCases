@@ -73,7 +73,9 @@ class TonWalletManager:
         # --- Запись в базу ---
         success = await self.db.add_ton_wallet(
             user_id=wallet_data.user_id,
-            wallet_address=wallet_data.wallet_address
+            wallet_address=wallet_data.wallet_address,
+            network=wallet_data.network,
+            public_key=wallet_data.public_key
         )
 
         if not success:
@@ -149,7 +151,8 @@ class TonWalletManager:
             id=wallet.id,
             wallet_address=wallet.wallet_address,
             created_at=wallet.created_at,
-            is_active=wallet.is_active
+            is_active=wallet.is_active,
+            network=wallet.network
         )
 
     @staticmethod

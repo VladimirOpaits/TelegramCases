@@ -40,7 +40,9 @@ class TonWallet(Base):
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.user_id", ondelete="CASCADE"))
-    wallet_address: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    wallet_address: Mapped[str] = mapped_column(String(48), nullable=False, unique=True)
+    network: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)  # -239, 0, etc.
+    public_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # Public key в hex
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     is_active: Mapped[bool] = mapped_column(default=True)
     
@@ -51,7 +53,7 @@ class TonWallet(Base):
     )
 
     def __repr__(self):
-        return f"<TonWallet(id={self.id}, user_id={self.user_id}, address='{self.wallet_address}')>"
+        return f"<TonWallet(id={self.id}, user_id={self.user_id}, address='{self.wallet_address}', network='{self.network}')>"
 
 
 class Case(Base):
@@ -319,11 +321,13 @@ class DatabaseManager:
             return False
         
     # ========== МЕТОДЫ ДЛЯ РАБОТЫ С TON КОШЕЛЬКАМИ ==========
-    async def add_ton_wallet(self, user_id: int, wallet_address: str) -> bool:
+    async def add_ton_wallet(self, user_id: int, wallet_address: str, network: Optional[str] = None, public_key: Optional[str] = None) -> bool:
         """
         Добавление TON кошелька для пользователя
         :param user_id: ID пользователя в Telegram
         :param wallet_address: Адрес кошелька в сети TON
+        :param network: Сеть кошелька (например, "-239")
+        :param public_key: Публичный ключ кошелька в hex формате
         :return: True если успешно, False если ошибка
         """
         try:
@@ -348,7 +352,9 @@ class DatabaseManager:
                 # Создаем новый кошелек
                 new_wallet = TonWallet(
                     user_id=user_id,
-                    wallet_address=wallet_address
+                    wallet_address=wallet_address,
+                    network=network,
+                    public_key=public_key
                 )
                 
                 session.add(new_wallet)
