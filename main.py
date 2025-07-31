@@ -103,7 +103,7 @@ class TopUpRequest(BaseModel):
 class TopUpPayload(BaseModel):
   amount: float  # Количество TON для отправки
   destination: str  # Адрес кошелька для получения
-  payload: str  # Hex-encoded payload для транзакции
+  payload: str  # Текстовый комментарий для транзакции
   comment: str  # Комментарий к транзакции
 
 
@@ -354,23 +354,13 @@ async def create_topup_payload(
         # Адрес кошелька для получения платежей (из конфигурации)
         destination_wallet = TON_WALLET_ADDRESS
         
-        # Создаем payload для транзакции
-        # Формат: user_id:amount:timestamp
-        import time
-        timestamp = int(time.time())
-        payload_data = f"{current_user_id}:{request.amount}:{timestamp}"
-        
-        # Конвертируем в hex
-        import hashlib
-        payload_hash = hashlib.sha256(payload_data.encode()).hexdigest()
-        
         # Создаем комментарий для транзакции
-        comment = f"Пополнение счета на {request.amount} фантиков"
+        comment = f"Пополнение счета на {request.amount} фантиков (ID: {current_user_id})"
         
         return TopUpPayload(
             amount=ton_amount,
             destination=destination_wallet,
-            payload=payload_hash,
+            payload=comment,  # Используем комментарий как payload
             comment=comment
         )
         
