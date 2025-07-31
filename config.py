@@ -29,9 +29,17 @@ WEB_APP_URL = os.getenv("WEB_APP_URL")
 
 TON_TESTNET = os.getenv("TON_TESTNET", "true").lower() == "true"
 
+# TON кошельки для получения платежей
+TON_WALLET_TESTNET = os.getenv("TON_WALLET_TESTNET", "EQD4FPq-PRDieyQKkizFTRtSDyucUIqrj0v_zXJmqaDp6_0t")
+TON_WALLET_MAINNET = os.getenv("TON_WALLET_MAINNET", "EQD4FPq-PRDieyQKkizFTRtSDyucUIqrj0v_zXJmqaDp6_0t")  # Замените на ваш основной адрес
+
+# Выбираем адрес в зависимости от сети
+TON_WALLET_ADDRESS = TON_WALLET_TESTNET if TON_TESTNET else TON_WALLET_MAINNET
+
 print(f"🔧 Режим разработки: {DEV_MODE}")
 print(f"🌐 Web App URL: {WEB_APP_URL}")
 print(f"🔒 CORS Origins: {CORS_ORIGINS}")
 print(f"🗄️ Database: {'Neon' if 'neon' in str(DATABASE_URL) else 'PostgreSQL' if 'postgresql' in str(DATABASE_URL) else 'SQLite'}")
 print(f"🐰 RabbitMQ: {'CloudAMQP' if RABBITMQ_URL and 'cloudamqp' in RABBITMQ_URL else 'Local' if RABBITMQ_URL else 'Отключен'}")
 print(f"🌐 TON Network: {'TESTNET' if TON_TESTNET else 'MAINNET'}")
+print(f"💰 TON Wallet: {TON_WALLET_ADDRESS[:10]}...{TON_WALLET_ADDRESS[-10:]}")

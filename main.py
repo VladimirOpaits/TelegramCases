@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from database import DatabaseManager
 from Cases import CaseManager
-from config import DATABASE_URL, CORS_ORIGINS, API_HOST, API_PORT, RABBITMQ_URL, DEV_MODE
+from config import DATABASE_URL, CORS_ORIGINS, API_HOST, API_PORT, RABBITMQ_URL, DEV_MODE, TON_WALLET_ADDRESS
 from pydantic import BaseModel
 import uvicorn
 import os
@@ -351,8 +351,8 @@ async def create_topup_payload(
         # Конвертируем фантики в TON (1 TON = 1000 фантиков)
         ton_amount = request.amount / 1000.0
         
-        # Адрес кошелька для получения платежей (тестнет)
-        destination_wallet = "EQD4FPq-PRDieyQKkizFTRtSDyucUIqrj0v_zXJmqaDp6_0t"
+        # Адрес кошелька для получения платежей (из конфигурации)
+        destination_wallet = TON_WALLET_ADDRESS
         
         # Создаем payload для транзакции
         # Формат: user_id:amount:timestamp

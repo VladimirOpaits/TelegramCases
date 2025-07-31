@@ -106,6 +106,9 @@ class CasePresent(Base):
         return f"<CasePresent(case_id={self.case_id}, present_id={self.present_id}, probability={self.probability})>"
 
 
+
+
+
 class DatabaseManager:
     def __init__(self, database_url: str):
         if "postgresql" in database_url:
@@ -517,3 +520,5 @@ class DatabaseManager:
         """Закрытие соединения с базой данных"""
         await self.engine.dispose()
         print("🔌 Соединение с базой данных закрыто")
+
+
