@@ -367,14 +367,17 @@ async def create_topup_payload(
         # Адрес кошелька для получения платежей (из конфигурации)
         destination_wallet = TON_WALLET_ADDRESS
         
-        # Создаем комментарий для транзакции
-        comment = f"Пополнение счета на {request.amount} фантиков (ID: {current_user_id})"
+        # Создаем короткий комментарий для транзакции (TON имеет ограничения на длину)
+        comment = f"Fantics {request.amount} ID:{current_user_id}"
         
-        # Используем простой текстовый payload
+        # Проверяем длину комментария (TON рекомендует до 127 символов)
+        if len(comment) > 127:
+            comment = f"Fantics {request.amount}"
+        
         return TopUpPayload(
             amount=ton_amount,
             destination=destination_wallet,
-            payload=comment,  # Используем простой текстовый payload
+            payload=comment,  # Используем короткий текстовый payload
             comment=comment
         )
         
