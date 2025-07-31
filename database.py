@@ -136,6 +136,36 @@ class DatabaseManager:
             print(f"❌ Ошибка инициализации БД: {e}")
             raise
 
+    async def clear_cache_and_reconnect(self):
+        """Принудительная очистка кэша и пересоздание подключения"""
+        try:
+            # Закрываем все соединения
+            await self.engine.dispose()
+            print("🔄 Кэш SQLAlchemy очищен")
+            
+            # Пересоздаем engine
+            if "postgresql" in self.engine.url:
+                self.engine = create_async_engine(
+                    self.engine.url, 
+                    echo=False, 
+                    pool_size=10,
+                    max_overflow=20,
+                    pool_pre_ping=True,
+                    pool_recycle=3600
+                )
+            else:
+                self.engine = create_async_engine(self.engine.url, echo=True)
+                
+            self.async_session = async_sessionmaker(
+                self.engine,
+                class_=AsyncSession,
+                expire_on_commit=False
+            )
+            print("✅ Подключение к базе данных пересоздано")
+        except Exception as e:
+            print(f"❌ Ошибка при очистке кэша: {e}")
+            raise
+
     # ========== МЕТОДЫ ДЛЯ РАБОТЫ С ПОЛЬЗОВАТЕЛЯМИ ==========
     
     async def add_user(self, user_id: int, username: Optional[str] = None) -> bool:
@@ -364,6 +394,18 @@ class DatabaseManager:
                 
         except Exception as e:
             print(f"❌ Ошибка при добавлении TON кошелька: {e}")
+            
+            # Проверяем, является ли это ошибкой кэша
+            if "InvalidCachedStatementError" in str(e) or "cached statement plan is invalid" in str(e):
+                print("🔄 Обнаружена ошибка кэша SQLAlchemy, очищаем кэш...")
+                try:
+                    await self.clear_cache_and_reconnect()
+                    # Повторяем попытку после очистки кэша
+                    return await self.add_ton_wallet(user_id, wallet_address, network, public_key)
+                except Exception as retry_error:
+                    print(f"❌ Ошибка при повторной попытке: {retry_error}")
+                    return False
+            
             return False
 
     async def get_user_ton_wallets(self, user_id: int) -> List[TonWallet]:
@@ -399,6 +441,18 @@ class DatabaseManager:
                 return result.scalar_one_or_none()
         except Exception as e:
             print(f"❌ Ошибка при получении TON кошелька: {e}")
+            
+            # Проверяем, является ли это ошибкой кэша
+            if "InvalidCachedStatementError" in str(e) or "cached statement plan is invalid" in str(e):
+                print("🔄 Обнаружена ошибка кэша SQLAlchemy, очищаем кэш...")
+                try:
+                    await self.clear_cache_and_reconnect()
+                    # Повторяем попытку после очистки кэша
+                    return await self.get_ton_wallet_by_address(wallet_address)
+                except Exception as retry_error:
+                    print(f"❌ Ошибка при повторной попытке: {retry_error}")
+                    return None
+            
             return None
 
     async def deactivate_ton_wallet(self, wallet_address: str) -> bool:
