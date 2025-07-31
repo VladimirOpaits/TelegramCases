@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from dependencies import get_current_user, get_current_user_id
 from pytonconnect import TonConnect
 from ton_wallet_manager import TonWalletManager, TonWalletRequest, TonWalletResponse
+from typing import Optional
 
 logging.basicConfig(
   level=logging.DEBUG,
@@ -94,6 +95,16 @@ ton_wallet_manager = TonWalletManager(db_manager)
 class FanticsTransaction(BaseModel):
   user_id: int
   amount: int
+
+class TopUpRequest(BaseModel):
+  amount: int  # Количество фантиков для пополнения
+  payment_method: str  # "ton" или "telegram_stars"
+
+class TopUpPayload(BaseModel):
+  amount: float  # Количество TON для отправки
+  destination: str  # Адрес кошелька для получения
+  payload: str  # Hex-encoded payload для транзакции
+  comment: str  # Комментарий к транзакции
 
 
 @app.get("/")
@@ -325,6 +336,69 @@ async def connect_ton_wallet(
     except Exception as e:
         print(f"Неожиданная ошибка: {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/topup/create_payload")
+async def create_topup_payload(
+    request: TopUpRequest,
+    current_user_id: int = Depends(get_current_user_id)
+):
+    """Создание payload для пополнения счета через TON"""
+    try:
+        # Проверяем, что пользователь выбрал TON как метод оплаты
+        if request.payment_method != "ton":
+            raise HTTPException(status_code=400, detail="Поддерживается только оплата через TON")
+        
+        # Конвертируем фантики в TON (1 TON = 1000 фантиков)
+        ton_amount = request.amount / 1000.0
+        
+        # Адрес кошелька для получения платежей (тестнет)
+        destination_wallet = "EQD4FPq-PRDieyQKkizFTRtSDyucUIqrj0v_zXJmqaDp6_0t"
+        
+        # Создаем payload для транзакции
+        # Формат: user_id:amount:timestamp
+        import time
+        timestamp = int(time.time())
+        payload_data = f"{current_user_id}:{request.amount}:{timestamp}"
+        
+        # Конвертируем в hex
+        import hashlib
+        payload_hash = hashlib.sha256(payload_data.encode()).hexdigest()
+        
+        # Создаем комментарий для транзакции
+        comment = f"Пополнение счета на {request.amount} фантиков"
+        
+        return TopUpPayload(
+            amount=ton_amount,
+            destination=destination_wallet,
+            payload=payload_hash,
+            comment=comment
+        )
+        
+    except Exception as e:
+        print(f"❌ Ошибка при создании payload: {e}")
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")
+
+@app.post("/topup/confirm")
+async def confirm_topup(
+    request: TopUpRequest,
+    current_user_id: int = Depends(get_current_user_id)
+):
+    """Подтверждение пополнения счета после успешной транзакции"""
+    try:
+        # Здесь в будущем можно добавить проверку транзакции в блокчейне
+        # Пока что просто добавляем фантики пользователю
+        
+        success = await db_manager.add_fantics(current_user_id, request.amount)
+        
+        if success:
+            print(f"✅ Пополнение счета: пользователь {current_user_id} получил {request.amount} фантиков")
+            return {"success": True, "message": f"Счет пополнен на {request.amount} фантиков"}
+        else:
+            raise HTTPException(status_code=400, detail="Не удалось пополнить счет")
+            
+    except Exception as e:
+        print(f"❌ Ошибка при подтверждении пополнения: {e}")
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")
 
 
 
