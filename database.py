@@ -356,6 +356,111 @@ class DatabaseManager:
         except Exception as e:
             print(f"❌ Ошибка при установке фантиков: {e}")
             return False
+
+    # ========== АТОМАРНЫЕ ОПЕРАЦИИ ДЛЯ БЕЗОПАСНОСТИ ==========
+
+    async def atomic_case_transaction(self, user_id: int, case_cost: int, prize_amount: int) -> tuple[bool, str, int]:
+        """
+        Атомарная транзакция для открытия кейса:
+        1. Проверяет существование пользователя
+        2. Проверяет баланс
+        3. Списывает стоимость кейса
+        4. Добавляет выигрыш
+        
+        Возвращает: (успех, сообщение, новый_баланс)
+        """
+        try:
+            async with self.async_session() as session:
+                # Начинаем транзакцию с блокировкой строки пользователя
+                stmt = select(User).where(User.user_id == user_id).with_for_update()
+                result = await session.execute(stmt)
+                user = result.scalar_one_or_none()
+
+                if not user:
+                    return False, "Пользователь не найден в системе", 0
+
+                # Проверяем достаточность средств
+                if user.fantics < case_cost:
+                    return False, f"Недостаточно фантиков. Требуется: {case_cost}, доступно: {user.fantics}", user.fantics
+
+                # Выполняем атомарную операцию
+                old_balance = user.fantics
+                user.fantics = user.fantics - case_cost + prize_amount
+                new_balance = user.fantics
+
+                # Фиксируем транзакцию
+                await session.commit()
+                
+                print(f"💎 Атомарная транзакция кейса: пользователь {user_id}, баланс {old_balance} -> {new_balance}")
+                return True, f"Кейс открыт! Потрачено: {case_cost}, выиграно: {prize_amount}", new_balance
+
+        except Exception as e:
+            print(f"❌ Ошибка в атомарной транзакции кейса: {e}")
+            return False, f"Ошибка транзакции: {str(e)}", 0
+
+    async def atomic_subtract_fantics(self, user_id: int, amount: int) -> tuple[bool, str, int]:
+        """
+        Атомарное списание фантиков с проверкой баланса
+        
+        Возвращает: (успех, сообщение, новый_баланс)
+        """
+        try:
+            async with self.async_session() as session:
+                # Блокируем строку пользователя для чтения и изменения
+                stmt = select(User).where(User.user_id == user_id).with_for_update()
+                result = await session.execute(stmt)
+                user = result.scalar_one_or_none()
+
+                if not user:
+                    return False, "Пользователь не найден", 0
+
+                # Проверяем достаточность средств
+                if user.fantics < amount:
+                    return False, f"Недостаточно фантиков. Требуется: {amount}, доступно: {user.fantics}", user.fantics
+
+                # Списываем средства
+                old_balance = user.fantics
+                user.fantics -= amount
+                new_balance = user.fantics
+
+                await session.commit()
+                
+                print(f"➖ Атомарное списание: пользователь {user_id}, {old_balance} -> {new_balance}")
+                return True, f"Списано {amount} фантиков", new_balance
+
+        except Exception as e:
+            print(f"❌ Ошибка в атомарном списании: {e}")
+            return False, f"Ошибка списания: {str(e)}", 0
+
+    async def atomic_add_fantics(self, user_id: int, amount: int) -> tuple[bool, str, int]:
+        """
+        Атомарное добавление фантиков
+        
+        Возвращает: (успех, сообщение, новый_баланс)
+        """
+        try:
+            async with self.async_session() as session:
+                # Блокируем строку пользователя
+                stmt = select(User).where(User.user_id == user_id).with_for_update()
+                result = await session.execute(stmt)
+                user = result.scalar_one_or_none()
+
+                if not user:
+                    return False, "Пользователь не найден в системе", 0
+
+                # Добавляем средства
+                old_balance = user.fantics
+                user.fantics += amount
+                new_balance = user.fantics
+
+                await session.commit()
+                
+                print(f"➕ Атомарное добавление: пользователь {user_id}, {old_balance} -> {new_balance}")
+                return True, f"Добавлено {amount} фантиков", new_balance
+
+        except Exception as e:
+            print(f"❌ Ошибка в атомарном добавлении: {e}")
+            return False, f"Ошибка добавления: {str(e)}", 0
         
     # ========== МЕТОДЫ ДЛЯ РАБОТЫ С TON КОШЕЛЬКАМИ ==========
     async def add_ton_wallet(self, user_id: int, wallet_address: str, network: Optional[str] = None, public_key: Optional[str] = None, retry_count: int = 0) -> bool:
