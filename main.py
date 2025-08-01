@@ -487,6 +487,38 @@ async def confirm_topup(
         raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
 
 
+@app.post("/test/stars_payment")
+async def test_stars_payment(
+    amount: int = 100,
+    current_user_id: int = Depends(get_current_user_id)
+):
+    """Тестовый эндпоинт для проверки работы Telegram Stars платежей"""
+    try:
+        if rabbit_manager.is_ready:
+            success = await rabbit_manager.send_stars_payment_request(current_user_id, amount)
+            
+            if success:
+                return {
+                    "success": True,
+                    "message": f"Тестовый запрос на {amount} фантиков отправлен в Telegram бот",
+                    "user_id": current_user_id,
+                    "amount": amount,
+                    "note": "Проверьте Telegram - должен прийти invoice для оплаты звездочками"
+                }
+            else:
+                raise HTTPException(status_code=500, detail="Ошибка отправки тестового запроса")
+        else:
+            raise HTTPException(
+                status_code=503, 
+                detail="RabbitMQ не подключен. Убедитесь, что RabbitMQ запущен и доступен."
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Ошибка тестового эндпоинта: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка тестирования: {str(e)}")
+
 
 # Подключаем RabbitMQ роутер, если он доступен
 rabbit_router = rabbit_manager.get_router()
