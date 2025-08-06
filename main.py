@@ -10,9 +10,9 @@ from contextlib import asynccontextmanager
 from database import DatabaseManager
 from Cases import CaseManager
 from rabbit_manager import RabbitManager
-from config import DATABASE_URL, API_HOST, API_PORT, CORS_ORIGINS, DEV_MODE
+import config
 from dependencies import get_current_user, get_current_user_id
-from payment_manager import PaymentManager, TonWalletRequest, TonWalletResponse, FanticsTransaction, TopUpTonRequest, TopUpStarsRequest, TopUpPayload, TopUpRequest
+from payment_manager import PaymentManager, TonWalletRequest, TonWalletResponse, FanticsTransaction, TopUpTonRequest, TopUpStarsRequest
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
@@ -20,7 +20,7 @@ for logger in ["uvicorn.access", "uvicorn.error", "fastapi", "sqlalchemy", "aio_
     logging.getLogger(logger).setLevel(logging.WARNING)
 
 
-db_manager = DatabaseManager(DATABASE_URL)
+db_manager = DatabaseManager(config.DATABASE_URL)
 case_manager = CaseManager(db_manager)
 rabbit_manager = RabbitManager(db_manager)
 use_rabbitmq = rabbit_manager.initialize()
@@ -32,12 +32,10 @@ async def lifespan(app: FastAPI):
     print("🚀 Запуск API сервера...")
     
     try:
-        # Инициализация базы данных
         await db_manager.init_db()
         await case_manager.initialize()
         print("✅ База данных инициализирована")
 
-        # Инициализация RabbitMQ
         if use_rabbitmq:
             await rabbit_manager.connect()
 
@@ -51,7 +49,7 @@ async def lifespan(app: FastAPI):
 
     except Exception as e:
         print(f"❌ Критическая ошибка инициализации: {e}")
-        raise  # Пробрасываем ошибку дальше
+        raise  
 
     yield
     print("🔌 Остановка API сервера...")
@@ -94,22 +92,6 @@ async def get_cases():
 
   return cases_list
 
-
-@app.get("/case/{case_id}")
-async def get_case(case_id: int):
-  """Получить информацию о конкретном кейсе"""
-  case = await case_manager.repository.get_case(case_id=case_id)
-  if not case:
-    raise HTTPException(status_code=404, detail="Не нашли кейс, лол")
-  return {
-    "id": case.id,
-    "name": case.name,
-    "cost": case.cost,
-    "presents": [{"cost": p.cost, "probability": prob}
-                 for p, prob in case.presents_with_probabilities],
-    "created_at": case.created_at.isoformat() if case.created_at else None,
-    "updated_at": case.updated_at.isoformat() if case.updated_at else None
-  }
 
 
 @app.post("/open_case/{case_id}")
@@ -175,7 +157,6 @@ async def get_user_fantics(
   print(f"У {user_id} {fantics} ебанных фантиков")
   return {"user_id": user_id, "fantics": fantics}
 
-# Убрали middleware для логирования - он создавал лишний шум
 
 @app.get("/ton/wallets", response_model=List[TonWalletResponse])
 async def get_user_ton_wallets(current_user_id: int = Depends(get_current_user_id)):
@@ -207,40 +188,53 @@ async def create_ton_topup_payload(
 
 @app.post("/topup/ton/confirm")
 async def confirm_ton_topup(
-    request: TopUpTonRequest,
+    request: dict,  # Теперь принимаем payment_id и transaction_hash
     current_user_id: int = Depends(get_current_user_id)
 ):
     """Подтверждение пополнения счета после успешной TON транзакции"""
-    return await payment_manager.confirm_ton_payment(request, current_user_id)
-
-# Оставляем старые эндпоинты для обратной совместимости
-@app.post("/topup/create_payload")
-async def create_topup_payload(
-    request: TopUpRequest,
-    current_user_id: int = Depends(get_current_user_id)
-):
-    """Создание payload для пополнения счета (старый эндпоинт для обратной совместимости)"""
-    # Проверяем, что пользователь выбрал TON как метод оплаты
-    if request.payment_method != "ton":
-        raise HTTPException(status_code=400, detail="Используйте /topup/stars для оплаты звездочками")
+    payment_id = request.get("payment_id")
+    transaction_hash = request.get("transaction_hash")
     
-    # Переадресуем на новый эндпоинт
-    ton_request = TopUpTonRequest(amount=request.amount)
-    return await create_ton_topup_payload(ton_request, current_user_id)
+    if not payment_id:
+        raise HTTPException(status_code=400, detail="Требуется payment_id")
+    if not transaction_hash:
+        raise HTTPException(status_code=400, detail="Требуется transaction_hash")
+    
+    return await payment_manager.confirm_ton_payment(
+        payment_id=payment_id,
+        transaction_hash=transaction_hash,
+        user_id=current_user_id
+    )
 
-@app.post("/topup/confirm")
-async def confirm_topup(
-    request: TopUpRequest,
+@app.get("/payment/status/{payment_id}")
+async def get_payment_status(
+    payment_id: str,
     current_user_id: int = Depends(get_current_user_id)
 ):
-    """Подтверждение пополнения счета (старый эндпоинт для обратной совместимости)"""
-    # Переадресуем на новый эндпоинт для TON
-    ton_request = TopUpTonRequest(amount=request.amount)
-    return await confirm_ton_topup(ton_request, current_user_id)
+    """Получение статуса платежа"""
+    payment = await db_manager.get_pending_payment(payment_id)
+    if not payment:
+        raise HTTPException(status_code=404, detail="Платеж не найден")
+    
+    if payment.user_id != current_user_id:
+        raise HTTPException(status_code=403, detail="Доступ запрещен")
+    
+    return {
+        "payment_id": payment.payment_id,
+        "status": payment.status,
+        "amount_fantics": payment.amount_fantics,
+        "amount_ton": payment.amount_ton,
+        "created_at": payment.created_at.isoformat(),
+        "expires_at": payment.expires_at.isoformat(),
+        "confirmed_at": payment.confirmed_at.isoformat() if payment.confirmed_at else None,
+        "transaction_hash": payment.transaction_hash
+    }
+
+
 
 if __name__ == "__main__":
-  print(f"🌐 Запуск сервера на http://{API_HOST}:{API_PORT}")
-  print(f"🗄️ База данных: {'Neon PostgreSQL' if 'neon' in DATABASE_URL else 'PostgreSQL' if 'postgresql' in DATABASE_URL else 'SQLite'}")
+  print(f"🌐 Запуск сервера на http://{config.API_HOST}:{config.API_PORT}")
+  print(f"🗄️ База данных: {'Neon PostgreSQL' if 'neon' in config.DATABASE_URL else 'PostgreSQL' if 'postgresql' in config.DATABASE_URL else 'SQLite'}")
   print(f"🐰 RabbitMQ: {'Включен' if rabbit_manager.is_available else 'Отключен'}")
-  uvicorn.run("main:app", host=API_HOST, port=API_PORT)
+  uvicorn.run("main:app", host=config.API_HOST, port=config.API_PORT)
 

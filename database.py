@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy import BigInteger, String, DateTime, select, func, Integer, CheckConstraint, Float, ForeignKey, UniqueConstraint
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 from typing import Optional, List
 
@@ -84,6 +84,27 @@ class Present(Base):
 
     def __repr__(self):
         return f"<Present(id={self.id}, cost={self.cost})>"
+
+
+class PendingPayment(Base):
+    __tablename__ = "pending_payments"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    payment_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount_fantics: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount_ton: Mapped[float] = mapped_column(Float, nullable=False)
+    payment_method: Mapped[str] = mapped_column(String(50), nullable=False)  # 'ton' или 'stars'
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default='pending')  # pending, confirmed, failed, expired
+    transaction_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    destination_address: Mapped[str] = mapped_column(String(255), nullable=False)
+    comment: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    
+    def __repr__(self):
+        return f"<PendingPayment(id={self.id}, payment_id='{self.payment_id}', user_id={self.user_id}, status='{self.status}')>"
 
 
 class CasePresent(Base):
@@ -620,6 +641,127 @@ class DatabaseManager:
         except Exception as e:
             print(f"❌ Ошибка при реактивации TON кошелька: {e}")
             return False
+
+    # ========== МЕТОДЫ ДЛЯ РАБОТЫ С PENDING ПЛАТЕЖАМИ ==========
+    
+    async def create_pending_payment(
+        self, 
+        payment_id: str,
+        user_id: int,
+        amount_fantics: int,
+        amount_ton: float,
+        payment_method: str,
+        destination_address: str,
+        comment: str,
+        expires_in_minutes: int = 30
+    ) -> bool:
+        """Создание записи о pending платеже"""
+        try:
+            async with self.async_session() as session:
+                expires_at = datetime.now() + timedelta(minutes=expires_in_minutes)
+                
+                payment = PendingPayment(
+                    payment_id=payment_id,
+                    user_id=user_id,
+                    amount_fantics=amount_fantics,
+                    amount_ton=amount_ton,
+                    payment_method=payment_method,
+                    status='pending',
+                    destination_address=destination_address,
+                    comment=comment,
+                    expires_at=expires_at
+                )
+                
+                session.add(payment)
+                await session.commit()
+                
+                print(f"💰 Создан pending платеж {payment_id} для пользователя {user_id} на {amount_fantics} фантиков")
+                return True
+                
+        except Exception as e:
+            print(f"❌ Ошибка создания pending платежа: {e}")
+            return False
+    
+    async def get_pending_payment(self, payment_id: str) -> Optional['PendingPayment']:
+        """Получение pending платежа по ID"""
+        try:
+            async with self.async_session() as session:
+                stmt = select(PendingPayment).where(PendingPayment.payment_id == payment_id)
+                result = await session.execute(stmt)
+                return result.scalar_one_or_none()
+        except Exception as e:
+            print(f"❌ Ошибка получения pending платежа: {e}")
+            return None
+    
+    async def update_payment_status(
+        self, 
+        payment_id: str, 
+        status: str, 
+        transaction_hash: Optional[str] = None
+    ) -> bool:
+        """Обновление статуса платежа"""
+        try:
+            async with self.async_session() as session:
+                stmt = select(PendingPayment).where(PendingPayment.payment_id == payment_id)
+                result = await session.execute(stmt)
+                payment = result.scalar_one_or_none()
+                
+                if not payment:
+                    print(f"❌ Pending платеж {payment_id} не найден")
+                    return False
+                
+                payment.status = status
+                if transaction_hash:
+                    payment.transaction_hash = transaction_hash
+                if status == 'confirmed':
+                    payment.confirmed_at = datetime.now()
+                
+                await session.commit()
+                print(f"✅ Статус платежа {payment_id} обновлен на '{status}'")
+                return True
+                
+        except Exception as e:
+            print(f"❌ Ошибка обновления статуса платежа: {e}")
+            return False
+    
+    async def get_pending_payments_for_verification(self, limit: int = 50) -> List['PendingPayment']:
+        """Получение pending платежей для проверки"""
+        try:
+            async with self.async_session() as session:
+                stmt = select(PendingPayment).where(
+                    PendingPayment.status == 'pending',
+                    PendingPayment.expires_at > datetime.now()
+                ).limit(limit)
+                result = await session.execute(stmt)
+                return result.scalars().all()
+        except Exception as e:
+            print(f"❌ Ошибка получения pending платежей: {e}")
+            return []
+    
+    async def expire_old_payments(self) -> int:
+        """Помечает истекшие платежи как expired"""
+        try:
+            async with self.async_session() as session:
+                stmt = select(PendingPayment).where(
+                    PendingPayment.status == 'pending',
+                    PendingPayment.expires_at <= datetime.now()
+                )
+                result = await session.execute(stmt)
+                expired_payments = result.scalars().all()
+                
+                count = 0
+                for payment in expired_payments:
+                    payment.status = 'expired'
+                    count += 1
+                
+                await session.commit()
+                if count > 0:
+                    print(f"⏰ Помечено {count} платежей как истекшие")
+                return count
+                
+        except Exception as e:
+            print(f"❌ Ошибка при истечении платежей: {e}")
+            return 0
 
     async def close(self):
         """Закрытие соединения с базой данных"""

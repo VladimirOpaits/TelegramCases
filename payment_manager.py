@@ -1,14 +1,4 @@
 
-"""
-Менеджер платежей и пополнений
-
-Этот модуль объединяет всю логику работы с платежами:
-- Модели для всех типов платежей и пополнений
-- Интеграция с TON кошельками и Telegram Stars
-- Логика создания и валидации платежей
-- Проверка и подтверждение платежей
-- Подготовка для проверки платежей в блокчейне
-"""
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
@@ -16,9 +6,11 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 from database import DatabaseManager
 from rabbit_manager import RabbitManager
-from config import TON_WALLET_ADDRESS, TON_TESTNET
+import config
 import asyncio
 import base64
+import uuid
+import aiohttp
 from nacl.signing import VerifyKey
 from nacl.exceptions import BadSignatureError
 from tonsdk.contract.wallet import Wallets, WalletVersionEnum
@@ -222,14 +214,18 @@ class PaymentManager:
         self, 
         request: TopUpTonRequest, 
         user_id: int
-    ) -> TopUpPayload:
+    ) -> Dict[str, Any]:
         """
         Создание payload для пополнения через TON
+        Теперь создает pending платеж в базе и возвращает payment_id
         """
         self.validate_topup_amount(request.amount)
         
         # Конвертируем фантики в TON
         ton_amount = request.amount / self.ton_to_fantics_rate
+        
+        # Создаем уникальный ID платежа
+        payment_id = str(uuid.uuid4())
         
         # Создаем комментарий для транзакции
         comment = f"Fantics {request.amount} ID:{user_id}"
@@ -238,46 +234,126 @@ class PaymentManager:
         if len(comment) > 127:
             comment = f"Fantics {request.amount}"
         
-        return TopUpPayload(
-            amount=ton_amount,
-            destination=TON_WALLET_ADDRESS,
-            payload=comment,
-            comment=comment
+        # Создаем pending платеж в базе данных
+        success = await self.db.create_pending_payment(
+            payment_id=payment_id,
+            user_id=user_id,
+            amount_fantics=request.amount,
+            amount_ton=ton_amount,
+            payment_method="ton",
+            destination_address=config.TON_WALLET_ADDRESS,
+            comment=comment,
+            expires_in_minutes=30
         )
+        
+        if not success:
+            raise HTTPException(
+                status_code=500, 
+                detail="Ошибка создания платежа"
+            )
+        
+        return {
+            "payment_id": payment_id,
+            "amount": ton_amount,
+            "destination": config.TON_WALLET_ADDRESS,
+            "payload": comment,
+            "comment": comment,
+            "status": "pending",
+            "expires_in": 30  # минут
+        }
 
     async def confirm_ton_payment(
         self, 
-        request: TopUpTonRequest, 
-        user_id: int,
-        transaction_hash: Optional[str] = None
+        payment_id: str,
+        transaction_hash: str,
+        user_id: int
     ) -> Dict[str, Any]:
         """
-        Подтверждение пополнения через TON
-        
-        ВНИМАНИЕ: В будущем здесь должна быть проверка транзакции в блокчейне!
-        Пока что используем прямое добавление фантиков.
+        Подтверждение пополнения через TON с реальной проверкой в блокчейне
         """
-        self.validate_topup_amount(request.amount)
+        # 1. Получаем pending платеж
+        payment = await self.db.get_pending_payment(payment_id)
+        if not payment:
+            raise HTTPException(
+                status_code=404, 
+                detail="Платеж не найден"
+            )
         
-        # TODO: Добавить проверку транзакции в блокчейне
-        # result = await self.verify_ton_transaction(transaction_hash, user_id, request.amount)
-        # if not result.is_valid:
-        #     raise HTTPException(status_code=400, detail=f"Транзакция не подтверждена: {result.message}")
+        # 2. Проверяем, что платеж принадлежит пользователю
+        if payment.user_id != user_id:
+            raise HTTPException(
+                status_code=403, 
+                detail="Доступ запрещен"
+            )
         
-        success, message, new_balance = await self.db.atomic_add_fantics(user_id, request.amount)
+        # 3. Проверяем статус платежа
+        if payment.status != 'pending':
+            if payment.status == 'confirmed':
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Платеж уже подтвержден"
+                )
+            else:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Платеж в статусе {payment.status}"
+                )
+        
+        # 4. Проверяем, не истек ли платеж
+        if payment.expires_at < datetime.now():
+            await self.db.update_payment_status(payment_id, 'expired')
+            raise HTTPException(
+                status_code=400, 
+                detail="Платеж истек"
+            )
+        
+        # 5. РЕАЛЬНО проверяем транзакцию в блокчейне
+        verification = await self.verify_ton_transaction(
+            transaction_hash=transaction_hash,
+            expected_user_id=payment.user_id,
+            expected_amount_fantics=payment.amount_fantics,
+            expected_comment=payment.comment
+        )
+        
+        if not verification.is_valid:
+            # Помечаем как неудачный
+            await self.db.update_payment_status(payment_id, 'failed', transaction_hash)
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Транзакция не подтверждена: {verification.message}"
+            )
+        
+        # 6. ТОЛЬКО ТЕПЕРЬ добавляем фантики
+        success, message, new_balance = await self.db.atomic_add_fantics(
+            payment.user_id, 
+            payment.amount_fantics
+        )
         
         if not success:
-            raise HTTPException(status_code=400, detail=message)
+            await self.db.update_payment_status(payment_id, 'failed', transaction_hash)
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Ошибка добавления фантиков: {message}"
+            )
         
-        print(f"✅ TON пополнение: пользователь {user_id} получил {request.amount} фантиков, баланс: {new_balance}")
+        # 7. Помечаем платеж как подтвержденный
+        await self.db.update_payment_status(payment_id, 'confirmed', transaction_hash)
+        
+        print(f"✅ TON пополнение подтверждено: пользователь {user_id} получил {payment.amount_fantics} фантиков, баланс: {new_balance}")
         
         return {
             "success": True,
-            "message": message,
+            "message": f"Платеж подтвержден! Добавлено {payment.amount_fantics} фантиков",
             "new_balance": new_balance,
-            "added_amount": request.amount,
+            "added_amount": payment.amount_fantics,
             "payment_method": "ton",
-            "transaction_hash": transaction_hash
+            "transaction_hash": transaction_hash,
+            "payment_id": payment_id,
+            "verification_details": {
+                "amount_sent": verification.amount_sent,
+                "sender_address": verification.sender_address,
+                "block_number": verification.block_number
+            }
         }
 
     # =========================================================================
@@ -346,27 +422,125 @@ class PaymentManager:
         self, 
         transaction_hash: str, 
         expected_user_id: int, 
-        expected_amount: int
+        expected_amount_fantics: int,
+        expected_comment: str
     ) -> PaymentVerificationResult:
         """
-        Проверка TON транзакции в блокчейне
-        
-        TODO: Реализовать проверку транзакции через TON API
-        - Проверить что транзакция существует и подтверждена
-        - Проверить сумму и адрес получателя
-        - Проверить комментарий на соответствие пользователю
+        Реальная проверка TON транзакции в блокчейне через TON API
         """
-        # ЗАГЛУШКА - в будущем здесь будет реальная проверка
-        await asyncio.sleep(0.1)  # Имитация запроса к API
+        try:
+            # Выбираем API в зависимости от сети
+            if config.TON_TESTNET:
+                api_url = "https://testnet.toncenter.com/api/v2"
+            else:
+                api_url = "https://toncenter.com/api/v2"
+            
+            # Получаем транзакции для нашего кошелька
+            async with aiohttp.ClientSession() as session:
+                # Запрос транзакций по адресу
+                params = {
+                    "address": config.TON_WALLET_ADDRESS,
+                    "limit": 50,  # Проверяем последние 50 транзакций
+                    "archival": "true"
+                }
+                
+                async with session.get(f"{api_url}/getTransactions", params=params) as response:
+                    if response.status != 200:
+                        return PaymentVerificationResult(
+                            is_valid=False,
+                            transaction_hash=transaction_hash,
+                            message=f"Ошибка API TON: {response.status}"
+                        )
+                    
+                    data = await response.json()
+                    
+                    if not data.get("ok"):
+                        return PaymentVerificationResult(
+                            is_valid=False,
+                            transaction_hash=transaction_hash,
+                            message=f"API ошибка: {data.get('error', 'Unknown error')}"
+                        )
+                    
+                    transactions = data.get("result", [])
+                    expected_amount_ton = expected_amount_fantics / self.ton_to_fantics_rate
+                    
+                    # Ищем нужную транзакцию
+                    for tx in transactions:
+                        tx_hash = tx.get("transaction_id", {}).get("hash")
+                        
+                        # Проверяем хэш (может быть в разных форматах)
+                        if (tx_hash == transaction_hash or 
+                            tx_hash == transaction_hash.replace("0x", "") or
+                            f"0x{tx_hash}" == transaction_hash):
+                            
+                            # Проверяем входящее сообщение
+                            in_msg = tx.get("in_msg", {})
+                            if not in_msg:
+                                continue
+                            
+                            # Проверяем сумму (в нанотонах)
+                            amount_nano = int(in_msg.get("value", "0"))
+                            amount_ton = amount_nano / 1e9
+                            
+                            # Допуск 0.01 TON для комиссий
+                            if abs(amount_ton - expected_amount_ton) > 0.01:
+                                return PaymentVerificationResult(
+                                    is_valid=False,
+                                    transaction_hash=transaction_hash,
+                                    amount_sent=amount_ton,
+                                    message=f"Неверная сумма: ожидалось {expected_amount_ton:.4f} TON, получено {amount_ton:.4f} TON"
+                                )
+                            
+                            # Проверяем комментарий
+                            msg_data = in_msg.get("msg_data", {})
+                            comment = ""
+                            
+                            if msg_data.get("@type") == "msg.dataText":
+                                comment = msg_data.get("text", "")
+                            elif msg_data.get("@type") == "msg.dataRaw":
+                                # Пытаемся декодировать base64
+                                try:
+                                    body = msg_data.get("body", "")
+                                    if body:
+                                        decoded = base64.b64decode(body).decode('utf-8', errors='ignore')
+                                        comment = decoded
+                                except:
+                                    pass
+                            
+                            # Проверяем, что комментарий содержит ID пользователя
+                            if f"ID:{expected_user_id}" not in comment and f"ID:{expected_user_id}" not in expected_comment:
+                                return PaymentVerificationResult(
+                                    is_valid=False,
+                                    transaction_hash=transaction_hash,
+                                    amount_sent=amount_ton,
+                                    message=f"Неверный комментарий: ожидался ID пользователя {expected_user_id}"
+                                )
+                            
+                            # Получаем адрес отправителя
+                            sender = in_msg.get("source", "unknown")
+                            
+                            return PaymentVerificationResult(
+                                is_valid=True,
+                                transaction_hash=transaction_hash,
+                                amount_sent=amount_ton,
+                                sender_address=sender,
+                                message="Транзакция успешно подтверждена",
+                                block_number=tx.get("transaction_id", {}).get("lt")
+                            )
+                    
+                    # Транзакция не найдена
+                    return PaymentVerificationResult(
+                        is_valid=False,
+                        transaction_hash=transaction_hash,
+                        message="Транзакция не найдена в блокчейне"
+                    )
         
-        return PaymentVerificationResult(
-            is_valid=True,  # TODO: реальная проверка
-            transaction_hash=transaction_hash,
-            amount_sent=expected_amount / self.ton_to_fantics_rate,
-            sender_address="unknown",  # TODO: получить из блокчейна
-            message="Проверка транзакции пока не реализована",
-            block_number=None
-        )
+        except Exception as e:
+            return PaymentVerificationResult(
+                is_valid=False,
+                transaction_hash=transaction_hash,
+                message=f"Ошибка проверки транзакции: {str(e)}"
+            )
 
     async def verify_stars_payment(
         self, 
@@ -416,200 +590,6 @@ class PaymentManager:
         return user_payments[:limit]
 
     # =========================================================================
-    # УПРАВЛЕНИЕ TON КОШЕЛЬКАМИ
-    # =========================================================================
-
-    async def connect_ton_wallet(
-        self,
-        wallet_data: TonWalletRequest,
-        current_user_id: int
-    ) -> TonWalletResponse:
-        """
-        Привязать TON кошелек к пользователю с проверкой Proof
-        """
-        if wallet_data.user_id != current_user_id:
-            raise HTTPException(
-                status_code=403,
-                detail="Вы можете привязывать кошельки только к своему аккаунту"
-            )
-
-        if not self.validate_ton_address(wallet_data.wallet_address):
-            raise HTTPException(
-                status_code=400,
-                detail="Неверный формат TON кошелька"
-            )
-
-        # Проверяем, не существует ли уже этот кошелек
-        existing_wallet = await self.db.get_ton_wallet_by_address(wallet_data.wallet_address)
-        if existing_wallet:
-            if existing_wallet.user_id == current_user_id:
-                return self._format_wallet_response(existing_wallet)
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Этот кошелек уже подключен к другому пользователю"
-                )
-
-        # Проверка TON Proof (если передан)
-        if wallet_data.proof:
-            if not self.verify_ton_proof(wallet_data.wallet_address, wallet_data.proof, wallet_data.public_key):
-                raise HTTPException(
-                    status_code=400,
-                    detail="TON Proof не прошёл проверку. Подключение кошелька невозможно."
-                )
-
-        # Запись в базу
-        success = await self.db.add_ton_wallet(
-            user_id=wallet_data.user_id,
-            wallet_address=wallet_data.wallet_address,
-            network=wallet_data.network,
-            public_key=wallet_data.public_key
-        )
-
-        if not success:
-            raise HTTPException(
-                status_code=400,
-                detail="Не удалось привязать кошелек"
-            )
-
-        wallet = await self.db.get_ton_wallet_by_address(wallet_data.wallet_address)
-        return self._format_wallet_response(wallet)
-
-    async def get_user_ton_wallets(
-        self,
-        user_id: int,
-        current_user_id: int
-    ) -> List[TonWalletResponse]:
-        """
-        Получить все TON кошельки пользователя
-        """
-        if user_id != current_user_id:
-            raise HTTPException(
-                status_code=403,
-                detail="Вы можете просматривать только свои кошельки"
-            )
-
-        wallets = await self.db.get_user_ton_wallets(user_id)
-        return [self._format_wallet_response(w) for w in wallets]
-
-    async def disconnect_ton_wallet(
-        self,
-        wallet_address: str,
-        current_user_id: int
-    ) -> Dict[str, str]:
-        """
-        Отвязать TON кошелек от пользователя
-        """
-        wallet = await self.db.get_ton_wallet_by_address(wallet_address)
-        if not wallet:
-            raise HTTPException(status_code=404, detail="Кошелек не найден")
-
-        if wallet.user_id != current_user_id:
-            raise HTTPException(
-                status_code=403,
-                detail="Вы можете отвязывать только свои кошельки"
-            )
-
-        success = await self.db.deactivate_ton_wallet(wallet_address)
-        if not success:
-            raise HTTPException(
-                status_code=400,
-                detail="Не удалось отвязать кошелек"
-            )
-
-        return {"status": "success", "message": "Кошелек успешно отвязан"}
-
-    # =========================================================================
-    # ВАЛИДАЦИЯ TON
-    # =========================================================================
-
-    @staticmethod
-    def validate_ton_address(address: str) -> bool:
-        """Поддержка обоих форматов TON адресов: raw (0:) и user-friendly (EQ/UQ)"""
-        if address.startswith('0:'):
-            parts = address.split(':')
-            return len(parts) == 2 and all(c.isalnum() or c == '_' for c in parts[1])
-
-        return (address.startswith(('EQ', 'UQ')) 
-            and len(address) == 48 
-            and all(c.isalnum() or c in {'-', '_'} for c in address))
-
-    @staticmethod
-    def verify_ton_proof(wallet_address: str, proof: TonProof, public_key: Optional[str]) -> bool:
-        """
-        Проверка TON Proof (валидность подписи + public_key => wallet_address)
-        """
-        try:
-            if not proof:
-                print("TON Proof: proof не передан")
-                return False
-            
-            # Проверяем обязательные поля proof
-            if not proof.payload:
-                print("TON Proof: payload отсутствует")
-                return False
-                
-            if not proof.signature:
-                print("TON Proof: signature отсутствует")
-                return False
-                
-            if not proof.domain:
-                print("TON Proof: domain отсутствует")
-                return False
-            
-            # Получаем публичный ключ
-            pubkey = proof.pubkey or public_key
-            if not pubkey:
-                print("TON Proof: не передан публичный ключ кошелька")
-                return False
-
-            # Декодируем payload и signature
-            try:
-                payload = base64.b64decode(proof.payload)
-                signature = base64.b64decode(proof.signature)
-            except Exception as e:
-                print(f"TON Proof: Ошибка декодирования base64: {e}")
-                return False
-
-            # Проверяем подпись
-            try:
-                verify_key = VerifyKey(bytes.fromhex(pubkey))
-                verify_key.verify(payload, signature)
-            except BadSignatureError:
-                print("TON Proof: Подпись неверна")
-                return False
-            except Exception as e:
-                print(f"TON Proof: Ошибка проверки подписи: {e}")
-                return False
-
-            # Проверяем соответствие адреса публичному ключу
-            try:
-                wallet_cls = Wallets.ALL[WalletVersionEnum.v4r2]
-                wallet = wallet_cls(bytes.fromhex(pubkey), 0)
-                derived_address_obj = Address(wallet.get_address(testnet=TON_TESTNET))
-                
-                # TODO: добавить более строгую проверку соответствия адреса
-                return True
-            except Exception as e:
-                print(f"TON Proof: Ошибка проверки адреса кошелька: {e}")
-                return False
-
-        except Exception as e:
-            print(f"TON Proof: Неожиданная ошибка валидации: {e}")
-            return False
-
-    @staticmethod
-    def _format_wallet_response(wallet) -> TonWalletResponse:
-        """Форматирование ответа с данными кошелька"""
-        return TonWalletResponse(
-            id=wallet.id,
-            wallet_address=wallet.wallet_address,
-            created_at=wallet.created_at,
-            is_active=wallet.is_active,
-            network=wallet.network
-        )
-
-    # =========================================================================
     # УТИЛИТЫ
     # =========================================================================
 
@@ -627,3 +607,152 @@ class PaymentManager:
         if len(comment) > 127:  # TON лимит
             comment = f"Fantics {amount}"
         return comment
+
+    # =========================================================================
+    # TON КОШЕЛЬКИ (перенесено из ton_wallet_manager.py)
+    # =========================================================================
+
+    async def get_user_ton_wallets(self, user_id: int, current_user_id: int) -> List[TonWalletResponse]:
+        """Получение всех TON кошельков пользователя"""
+        if user_id != current_user_id:
+            raise HTTPException(
+                status_code=403, 
+                detail="Вы можете просматривать только свои кошельки"
+            )
+
+        wallets = await self.db.get_user_ton_wallets(user_id)
+        return [self._format_wallet_response(wallet) for wallet in wallets]
+
+    async def connect_ton_wallet(
+        self, 
+        wallet_data: TonWalletRequest, 
+        current_user_id: int
+    ) -> TonWalletResponse:
+        """Подключение TON кошелька"""
+        if wallet_data.user_id != current_user_id:
+            raise HTTPException(
+                status_code=403, 
+                detail="Вы можете добавлять только свои кошельки"
+            )
+
+        # Валидация адреса кошелька
+        if not self.validate_ton_address(wallet_data.wallet_address):
+            raise HTTPException(
+                status_code=400, 
+                detail="Неверный формат адреса TON кошелька"
+            )
+
+        # Проверка TON Proof если предоставлен
+        if wallet_data.proof:
+            if not self.verify_ton_proof(wallet_data.proof, wallet_data.wallet_address):
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Неверная подпись TON Proof"
+                )
+
+        success = await self.db.add_ton_wallet(
+            user_id=wallet_data.user_id,
+            wallet_address=wallet_data.wallet_address,
+            network=wallet_data.network,
+            public_key=wallet_data.public_key
+        )
+
+        if not success:
+            raise HTTPException(
+                status_code=400, 
+                detail="Ошибка добавления кошелька. Возможно, кошелек уже привязан."
+            )
+
+        # Получаем добавленный кошелек
+        wallet = await self.db.get_ton_wallet_by_address(wallet_data.wallet_address)
+        if not wallet:
+            raise HTTPException(
+                status_code=500, 
+                detail="Ошибка получения добавленного кошелька"
+            )
+
+        return self._format_wallet_response(wallet)
+
+    async def disconnect_ton_wallet(
+        self, 
+        wallet_address: str, 
+        current_user_id: int
+    ) -> Dict[str, str]:
+        """Отключение TON кошелька"""
+        # Проверяем, что кошелек принадлежит пользователю
+        wallet = await self.db.get_ton_wallet_by_address(wallet_address)
+        if not wallet:
+            raise HTTPException(
+                status_code=404, 
+                detail="Кошелек не найден"
+            )
+
+        if wallet.user_id != current_user_id:
+            raise HTTPException(
+                status_code=403, 
+                detail="Вы можете отключать только свои кошельки"
+            )
+
+        success = await self.db.deactivate_ton_wallet(wallet_address)
+        if not success:
+            raise HTTPException(
+                status_code=500, 
+                detail="Ошибка отключения кошелька"
+            )
+
+        return {"message": f"Кошелек {wallet_address} успешно отключен"}
+
+    def _format_wallet_response(self, wallet) -> TonWalletResponse:
+        """Форматирование ответа с данными кошелька"""
+        return TonWalletResponse(
+            id=wallet.id,
+            wallet_address=wallet.wallet_address,
+            created_at=wallet.created_at,
+            is_active=wallet.is_active,
+            network=wallet.network
+        )
+
+    def validate_ton_address(self, address: str) -> bool:
+        """Валидация TON адреса"""
+        try:
+            # Простая проверка формата
+            if len(address) < 40 or len(address) > 50:
+                return False
+            
+            # Проверяем, что адрес начинается с правильного префикса
+            if not (address.startswith('EQ') or address.startswith('UQ') or address.startswith('kQ')):
+                return False
+            
+            # Дополнительная проверка через tonsdk (если нужна более строгая валидация)
+            try:
+                Address(address)
+                return True
+            except:
+                return False
+                
+        except Exception:
+            return False
+
+    def verify_ton_proof(self, proof: TonProof, wallet_address: str) -> bool:
+        """Проверка TON Proof"""
+        try:
+            # Создаем сообщение для подписи
+            message = f"ton-proof-item-v2/{wallet_address}/{proof.domain.lengthBytes}:{proof.domain.value}/{proof.timestamp}/{proof.payload}"
+            
+            # Декодируем подпись и публичный ключ
+            signature_bytes = base64.b64decode(proof.signature)
+            
+            if proof.pubkey:
+                pubkey_bytes = bytes.fromhex(proof.pubkey)
+            else:
+                return False
+            
+            # Проверяем подпись
+            verify_key = VerifyKey(pubkey_bytes)
+            verify_key.verify(message.encode(), signature_bytes)
+            
+            return True
+            
+        except (ValueError, BadSignatureError, Exception) as e:
+            print(f"❌ Ошибка проверки TON Proof: {e}")
+            return False
