@@ -308,6 +308,9 @@ class PaymentManager:
             )
         
         # 5. РЕАЛЬНО проверяем транзакцию в блокчейне
+        print(f"🔍 Проверка транзакции {transaction_hash} для платежа {payment_id}")
+        print(f"📊 Ожидаемые данные: пользователь {payment.user_id}, сумма {payment.amount_fantics} фантиков")
+        
         verification = await self.verify_ton_transaction(
             transaction_hash=transaction_hash,
             expected_user_id=payment.user_id,
@@ -318,9 +321,16 @@ class PaymentManager:
         if not verification.is_valid:
             # Помечаем как неудачный
             await self.db.update_payment_status(payment_id, 'failed', transaction_hash)
+            
+            # В тестнете даем более подробную информацию об ошибке
+            if config.TON_TESTNET:
+                error_detail = f"Транзакция не подтверждена в тестнете: {verification.message}. Возможно, транзакция еще обрабатывается. Попробуйте повторить через несколько секунд."
+            else:
+                error_detail = f"Транзакция не подтверждена: {verification.message}"
+            
             raise HTTPException(
                 status_code=400, 
-                detail=f"Транзакция не подтверждена: {verification.message}"
+                detail=error_detail
             )
         
         # 6. ТОЛЬКО ТЕПЕРЬ добавляем фантики
@@ -427,119 +437,176 @@ class PaymentManager:
     ) -> PaymentVerificationResult:
         """
         Реальная проверка TON транзакции в блокчейне через TON API
+        С улучшенной поддержкой тестнета
         """
         try:
             # Выбираем API в зависимости от сети
             if config.TON_TESTNET:
                 api_url = "https://testnet.toncenter.com/api/v2"
+                # В тестнете увеличиваем лимит и добавляем повторные попытки
+                max_attempts = 5
+                delay_between_attempts = 3  # секунды
+                transaction_limit = 100  # больше транзакций для проверки
             else:
                 api_url = "https://toncenter.com/api/v2"
+                max_attempts = 2
+                delay_between_attempts = 1
+                transaction_limit = 50
             
-            # Получаем транзакции для нашего кошелька
-            async with aiohttp.ClientSession() as session:
-                # Запрос транзакций по адресу
-                params = {
-                    "address": config.TON_WALLET_ADDRESS,
-                    "limit": 50,  # Проверяем последние 50 транзакций
-                    "archival": "true"
-                }
-                
-                async with session.get(f"{api_url}/getTransactions", params=params) as response:
-                    if response.status != 200:
-                        return PaymentVerificationResult(
-                            is_valid=False,
-                            transaction_hash=transaction_hash,
-                            message=f"Ошибка API TON: {response.status}"
-                        )
-                    
-                    data = await response.json()
-                    
-                    if not data.get("ok"):
-                        return PaymentVerificationResult(
-                            is_valid=False,
-                            transaction_hash=transaction_hash,
-                            message=f"API ошибка: {data.get('error', 'Unknown error')}"
-                        )
-                    
-                    transactions = data.get("result", [])
-                    expected_amount_ton = expected_amount_fantics / self.ton_to_fantics_rate
-                    
-                    # Ищем нужную транзакцию
-                    for tx in transactions:
-                        tx_hash = tx.get("transaction_id", {}).get("hash")
+            # Получаем транзакции для нашего кошелька с повторными попытками
+            for attempt in range(max_attempts):
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        # Запрос транзакций по адресу
+                        params = {
+                            "address": config.TON_WALLET_ADDRESS,
+                            "limit": transaction_limit,
+                            "archival": "true"
+                        }
                         
-                        # Проверяем хэш (может быть в разных форматах)
-                        if (tx_hash == transaction_hash or 
-                            tx_hash == transaction_hash.replace("0x", "") or
-                            f"0x{tx_hash}" == transaction_hash):
+                        async with session.get(f"{api_url}/getTransactions", params=params) as response:
+                            if response.status != 200:
+                                if attempt < max_attempts - 1:
+                                    print(f"⚠️ Попытка {attempt + 1}/{max_attempts}: Ошибка API TON: {response.status}")
+                                    await asyncio.sleep(delay_between_attempts)
+                                    continue
+                                else:
+                                    return PaymentVerificationResult(
+                                        is_valid=False,
+                                        transaction_hash=transaction_hash,
+                                        message=f"Ошибка API TON после {max_attempts} попыток: {response.status}"
+                                    )
                             
-                            # Проверяем входящее сообщение
-                            in_msg = tx.get("in_msg", {})
-                            if not in_msg:
-                                continue
+                            data = await response.json()
                             
-                            # Проверяем сумму (в нанотонах)
-                            amount_nano = int(in_msg.get("value", "0"))
-                            amount_ton = amount_nano / 1e9
+                            if not data.get("ok"):
+                                if attempt < max_attempts - 1:
+                                    print(f"⚠️ Попытка {attempt + 1}/{max_attempts}: API ошибка: {data.get('error', 'Unknown error')}")
+                                    await asyncio.sleep(delay_between_attempts)
+                                    continue
+                                else:
+                                    return PaymentVerificationResult(
+                                        is_valid=False,
+                                        transaction_hash=transaction_hash,
+                                        message=f"API ошибка после {max_attempts} попыток: {data.get('error', 'Unknown error')}"
+                                    )
                             
-                            # Допуск 0.01 TON для комиссий
-                            if abs(amount_ton - expected_amount_ton) > 0.01:
+                            transactions = data.get("result", [])
+                            expected_amount_ton = expected_amount_fantics / self.ton_to_fantics_rate
+                            
+                            # Ищем нужную транзакцию
+                            for tx in transactions:
+                                tx_hash = tx.get("transaction_id", {}).get("hash")
+                                
+                                # Проверяем хэш (может быть в разных форматах)
+                                if (tx_hash == transaction_hash or 
+                                    tx_hash == transaction_hash.replace("0x", "") or
+                                    f"0x{tx_hash}" == transaction_hash):
+                                    
+                                    # Проверяем входящее сообщение
+                                    in_msg = tx.get("in_msg", {})
+                                    if not in_msg:
+                                        continue
+                                    
+                                    # Проверяем сумму (в нанотонах)
+                                    amount_nano = int(in_msg.get("value", "0"))
+                                    amount_ton = amount_nano / 1e9
+                                    
+                                    # В тестнете увеличиваем допуск для комиссий
+                                    if config.TON_TESTNET:
+                                        tolerance = 0.05  # 0.05 TON допуск для тестнета
+                                    else:
+                                        tolerance = 0.01  # 0.01 TON допуск для мейннета
+                                    
+                                    if abs(amount_ton - expected_amount_ton) > tolerance:
+                                        return PaymentVerificationResult(
+                                            is_valid=False,
+                                            transaction_hash=transaction_hash,
+                                            amount_sent=amount_ton,
+                                            message=f"Неверная сумма: ожидалось {expected_amount_ton:.4f} TON, получено {amount_ton:.4f} TON"
+                                        )
+                                    
+                                    # Проверяем комментарий
+                                    msg_data = in_msg.get("msg_data", {})
+                                    comment = ""
+                                    
+                                    if msg_data.get("@type") == "msg.dataText":
+                                        comment = msg_data.get("text", "")
+                                    elif msg_data.get("@type") == "msg.dataRaw":
+                                        # Пытаемся декодировать base64
+                                        try:
+                                            body = msg_data.get("body", "")
+                                            if body:
+                                                decoded = base64.b64decode(body).decode('utf-8', errors='ignore')
+                                                comment = decoded
+                                        except:
+                                            pass
+                                    
+                                    # В тестнете делаем проверку комментария более мягкой
+                                    if config.TON_TESTNET:
+                                        # В тестнете проверяем только наличие суммы или ID
+                                        comment_valid = (
+                                            f"ID:{expected_user_id}" in comment or 
+                                            f"ID:{expected_user_id}" in expected_comment or
+                                            str(expected_amount_fantics) in comment or
+                                            str(expected_amount_fantics) in expected_comment
+                                        )
+                                    else:
+                                        # В мейннете строгая проверка
+                                        comment_valid = (
+                                            f"ID:{expected_user_id}" in comment or 
+                                            f"ID:{expected_user_id}" in expected_comment
+                                        )
+                                    
+                                    if not comment_valid:
+                                        return PaymentVerificationResult(
+                                            is_valid=False,
+                                            transaction_hash=transaction_hash,
+                                            amount_sent=amount_ton,
+                                            message=f"Неверный комментарий: ожидался ID пользователя {expected_user_id} или сумма {expected_amount_fantics}"
+                                        )
+                                    
+                                    # Получаем адрес отправителя
+                                    sender = in_msg.get("source", "unknown")
+                                    
+                                    print(f"✅ Транзакция подтверждена (попытка {attempt + 1}): {transaction_hash}")
+                                    return PaymentVerificationResult(
+                                        is_valid=True,
+                                        transaction_hash=transaction_hash,
+                                        amount_sent=amount_ton,
+                                        sender_address=sender,
+                                        message="Транзакция успешно подтверждена",
+                                        block_number=tx.get("transaction_id", {}).get("lt")
+                                    )
+                            
+                            # Транзакция не найдена в этой попытке
+                            if attempt < max_attempts - 1:
+                                print(f"⚠️ Попытка {attempt + 1}/{max_attempts}: Транзакция {transaction_hash} не найдена, ожидание {delay_between_attempts}с...")
+                                await asyncio.sleep(delay_between_attempts)
+                            else:
+                                print(f"❌ Транзакция {transaction_hash} не найдена после {max_attempts} попыток")
                                 return PaymentVerificationResult(
                                     is_valid=False,
                                     transaction_hash=transaction_hash,
-                                    amount_sent=amount_ton,
-                                    message=f"Неверная сумма: ожидалось {expected_amount_ton:.4f} TON, получено {amount_ton:.4f} TON"
+                                    message=f"Транзакция не найдена в блокчейне после {max_attempts} попыток"
                                 )
-                            
-                            # Проверяем комментарий
-                            msg_data = in_msg.get("msg_data", {})
-                            comment = ""
-                            
-                            if msg_data.get("@type") == "msg.dataText":
-                                comment = msg_data.get("text", "")
-                            elif msg_data.get("@type") == "msg.dataRaw":
-                                # Пытаемся декодировать base64
-                                try:
-                                    body = msg_data.get("body", "")
-                                    if body:
-                                        decoded = base64.b64decode(body).decode('utf-8', errors='ignore')
-                                        comment = decoded
-                                except:
-                                    pass
-                            
-                            # Проверяем, что комментарий содержит ID пользователя
-                            if f"ID:{expected_user_id}" not in comment and f"ID:{expected_user_id}" not in expected_comment:
-                                return PaymentVerificationResult(
-                                    is_valid=False,
-                                    transaction_hash=transaction_hash,
-                                    amount_sent=amount_ton,
-                                    message=f"Неверный комментарий: ожидался ID пользователя {expected_user_id}"
-                                )
-                            
-                            # Получаем адрес отправителя
-                            sender = in_msg.get("source", "unknown")
-                            
-                            return PaymentVerificationResult(
-                                is_valid=True,
-                                transaction_hash=transaction_hash,
-                                amount_sent=amount_ton,
-                                sender_address=sender,
-                                message="Транзакция успешно подтверждена",
-                                block_number=tx.get("transaction_id", {}).get("lt")
-                            )
-                    
-                    # Транзакция не найдена
-                    return PaymentVerificationResult(
-                        is_valid=False,
-                        transaction_hash=transaction_hash,
-                        message="Транзакция не найдена в блокчейне"
-                    )
+                
+                except Exception as e:
+                    if attempt < max_attempts - 1:
+                        print(f"⚠️ Попытка {attempt + 1}/{max_attempts}: Ошибка запроса: {e}")
+                        await asyncio.sleep(delay_between_attempts)
+                    else:
+                        return PaymentVerificationResult(
+                            is_valid=False,
+                            transaction_hash=transaction_hash,
+                            message=f"Ошибка проверки транзакции после {max_attempts} попыток: {str(e)}"
+                        )
         
         except Exception as e:
             return PaymentVerificationResult(
                 is_valid=False,
                 transaction_hash=transaction_hash,
-                message=f"Ошибка проверки транзакции: {str(e)}"
+                message=f"Критическая ошибка проверки транзакции: {str(e)}"
             )
 
     async def verify_stars_payment(
