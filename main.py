@@ -188,12 +188,13 @@ async def create_ton_topup_payload(
 
 @app.post("/topup/ton/confirm")
 async def confirm_ton_topup(
-    request: dict,  # Теперь принимаем payment_id и transaction_hash
+    request: dict,  # Теперь принимаем payment_id, transaction_hash и sender_wallet
     current_user_id: int = Depends(get_current_user_id)
 ):
     """Подтверждение пополнения счета после успешной TON транзакции"""
     payment_id = request.get("payment_id")
     transaction_hash = request.get("transaction_hash")
+    sender_wallet = request.get("sender_wallet")  # Новый параметр
     
     if not payment_id:
         raise HTTPException(status_code=400, detail="Требуется payment_id")
@@ -203,7 +204,8 @@ async def confirm_ton_topup(
     return await payment_manager.confirm_ton_payment(
         payment_id=payment_id,
         transaction_hash=transaction_hash,
-        user_id=current_user_id
+        user_id=current_user_id,
+        sender_wallet=sender_wallet
     )
 
 @app.get("/payment/status/{payment_id}")

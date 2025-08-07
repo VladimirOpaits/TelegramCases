@@ -266,7 +266,8 @@ class PaymentManager:
         self, 
         payment_id: str,
         transaction_hash: str,
-        user_id: int
+        user_id: int,
+        sender_wallet: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Подтверждение пополнения через TON (без проверки в блокчейне)
@@ -326,6 +327,7 @@ class PaymentManager:
             payment_method="ton",
             amount_fantics=payment.amount_fantics,
             amount_paid=payment.amount_ton,
+            sender_wallet=sender_wallet,  # Используем переданный адрес кошелька
             transaction_hash=transaction_hash,
             payment_id=payment_id
         )
