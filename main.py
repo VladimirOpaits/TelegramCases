@@ -231,9 +231,6 @@ async def get_payment_status(
     }
 
 
-
-
-
 if __name__ == "__main__":
   print(f"🌐 Запуск сервера на http://{config.API_HOST}:{config.API_PORT}")
   print(f"🗄️ База данных: {'Neon PostgreSQL' if 'neon' in config.DATABASE_URL else 'PostgreSQL' if 'postgresql' in config.DATABASE_URL else 'SQLite'}")

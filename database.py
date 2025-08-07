@@ -107,6 +107,23 @@ class PendingPayment(Base):
         return f"<PendingPayment(id={self.id}, payment_id='{self.payment_id}', user_id={self.user_id}, status='{self.status}')>"
 
 
+class SuccessfulPayment(Base):
+    __tablename__ = "successful_payments"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    payment_method: Mapped[str] = mapped_column(String(50), nullable=False)  # 'ton' или 'stars'
+    amount_fantics: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount_paid: Mapped[float] = mapped_column(Float, nullable=False)  # сумма в TON или звездочках
+    sender_wallet: Mapped[Optional[str]] = mapped_column(String(67), nullable=True)  # адрес кошелька отправителя (для TON)
+    transaction_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # хэш транзакции (для TON)
+    payment_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # ID платежа из pending_payments
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    
+    def __repr__(self):
+        return f"<SuccessfulPayment(id={self.id}, user_id={self.user_id}, method='{self.payment_method}', amount_fantics={self.amount_fantics}, amount_paid={self.amount_paid})>"
+
+
 class CasePresent(Base):
     __tablename__ = "case_presents"
     
@@ -762,6 +779,130 @@ class DatabaseManager:
         except Exception as e:
             print(f"❌ Ошибка при истечении платежей: {e}")
             return 0
+
+    # ========== МЕТОДЫ ДЛЯ РАБОТЫ С УСПЕШНЫМИ ПЛАТЕЖАМИ ==========
+    
+    async def add_successful_payment(
+        self,
+        user_id: int,
+        payment_method: str,
+        amount_fantics: int,
+        amount_paid: float,
+        sender_wallet: Optional[str] = None,
+        transaction_hash: Optional[str] = None,
+        payment_id: Optional[str] = None
+    ) -> bool:
+        """Добавление успешного платежа в базу данных"""
+        try:
+            async with self.async_session() as session:
+                payment = SuccessfulPayment(
+                    user_id=user_id,
+                    payment_method=payment_method,
+                    amount_fantics=amount_fantics,
+                    amount_paid=amount_paid,
+                    sender_wallet=sender_wallet,
+                    transaction_hash=transaction_hash,
+                    payment_id=payment_id
+                )
+                
+                session.add(payment)
+                await session.commit()
+                
+                print(f"✅ Успешный платеж записан: пользователь {user_id}, метод {payment_method}, {amount_fantics} фантиков за {amount_paid}")
+                return True
+                
+        except Exception as e:
+            print(f"❌ Ошибка записи успешного платежа: {e}")
+            return False
+    
+    async def get_user_successful_payments(
+        self, 
+        user_id: int, 
+        limit: int = 50
+    ) -> List[SuccessfulPayment]:
+        """Получение истории успешных платежей пользователя"""
+        try:
+            async with self.async_session() as session:
+                stmt = select(SuccessfulPayment).where(
+                    SuccessfulPayment.user_id == user_id
+                ).order_by(SuccessfulPayment.created_at.desc()).limit(limit)
+                
+                result = await session.execute(stmt)
+                return result.scalars().all()
+                
+        except Exception as e:
+            print(f"❌ Ошибка получения истории платежей: {e}")
+            return []
+    
+    async def get_all_successful_payments(
+        self, 
+        limit: int = 100
+    ) -> List[SuccessfulPayment]:
+        """Получение всех успешных платежей (для админа)"""
+        try:
+            async with self.async_session() as session:
+                stmt = select(SuccessfulPayment).order_by(
+                    SuccessfulPayment.created_at.desc()
+                ).limit(limit)
+                
+                result = await session.execute(stmt)
+                return result.scalars().all()
+                
+        except Exception as e:
+            print(f"❌ Ошибка получения всех платежей: {e}")
+            return []
+    
+    async def get_payment_statistics(self) -> dict:
+        """Получение статистики платежей"""
+        try:
+            async with self.async_session() as session:
+                # Общая статистика
+                total_payments = await session.scalar(
+                    select(func.count(SuccessfulPayment.id))
+                )
+                
+                # Статистика по методам оплаты
+                ton_payments = await session.scalar(
+                    select(func.count(SuccessfulPayment.id)).where(
+                        SuccessfulPayment.payment_method == 'ton'
+                    )
+                )
+                
+                stars_payments = await session.scalar(
+                    select(func.count(SuccessfulPayment.id)).where(
+                        SuccessfulPayment.payment_method == 'stars'
+                    )
+                )
+                
+                # Общая сумма фантиков
+                total_fantics = await session.scalar(
+                    select(func.sum(SuccessfulPayment.amount_fantics))
+                ) or 0
+                
+                # Общая сумма в TON
+                total_ton = await session.scalar(
+                    select(func.sum(SuccessfulPayment.amount_paid)).where(
+                        SuccessfulPayment.payment_method == 'ton'
+                    )
+                ) or 0
+                
+                return {
+                    "total_payments": total_payments,
+                    "ton_payments": ton_payments,
+                    "stars_payments": stars_payments,
+                    "total_fantics": total_fantics,
+                    "total_ton": total_ton
+                }
+                
+        except Exception as e:
+            print(f"❌ Ошибка получения статистики платежей: {e}")
+            return {
+                "total_payments": 0,
+                "ton_payments": 0,
+                "stars_payments": 0,
+                "total_fantics": 0,
+                "total_ton": 0
+            }
 
     async def close(self):
         """Закрытие соединения с базой данных"""

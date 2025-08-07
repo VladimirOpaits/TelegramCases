@@ -320,7 +320,17 @@ class PaymentManager:
                 detail=f"Ошибка добавления фантиков: {message}"
             )
         
-        # 6. Помечаем платеж как подтвержденный
+        # 6. Записываем успешный платеж
+        await self.db.add_successful_payment(
+            user_id=payment.user_id,
+            payment_method="ton",
+            amount_fantics=payment.amount_fantics,
+            amount_paid=payment.amount_ton,
+            transaction_hash=transaction_hash,
+            payment_id=payment_id
+        )
+        
+        # 7. Помечаем платеж как подтвержденный
         await self.db.update_payment_status(payment_id, 'confirmed', transaction_hash)
         
         print(f"✅ TON пополнение подтверждено: пользователь {user_id} получил {payment.amount_fantics} фантиков, баланс: {new_balance}")
