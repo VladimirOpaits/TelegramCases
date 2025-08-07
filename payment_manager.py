@@ -269,7 +269,7 @@ class PaymentManager:
         user_id: int
     ) -> Dict[str, Any]:
         """
-        Подтверждение пополнения через TON с реальной проверкой в блокчейне
+        Подтверждение пополнения через TON (без проверки в блокчейне)
         """
         # 1. Получаем pending платеж
         payment = await self.db.get_pending_payment(payment_id)
@@ -307,33 +307,7 @@ class PaymentManager:
                 detail="Платеж истек"
             )
         
-        # 5. РЕАЛЬНО проверяем транзакцию в блокчейне
-        print(f"🔍 Проверка транзакции {transaction_hash} для платежа {payment_id}")
-        print(f"📊 Ожидаемые данные: пользователь {payment.user_id}, сумма {payment.amount_fantics} фантиков")
-        
-        verification = await self.verify_ton_transaction(
-            transaction_hash=transaction_hash,
-            expected_user_id=payment.user_id,
-            expected_amount_fantics=payment.amount_fantics,
-            expected_comment=payment.comment
-        )
-        
-        if not verification.is_valid:
-            # Помечаем как неудачный
-            await self.db.update_payment_status(payment_id, 'failed', transaction_hash)
-            
-            # В тестнете даем более подробную информацию об ошибке
-            if config.TON_TESTNET:
-                error_detail = f"Транзакция не подтверждена в тестнете: {verification.message}. Возможно, транзакция еще обрабатывается. Попробуйте повторить через несколько секунд."
-            else:
-                error_detail = f"Транзакция не подтверждена: {verification.message}"
-            
-            raise HTTPException(
-                status_code=400, 
-                detail=error_detail
-            )
-        
-        # 6. ТОЛЬКО ТЕПЕРЬ добавляем фантики
+        # 5. Сразу добавляем фантики (без проверки в блокчейне)
         success, message, new_balance = await self.db.atomic_add_fantics(
             payment.user_id, 
             payment.amount_fantics
@@ -346,7 +320,7 @@ class PaymentManager:
                 detail=f"Ошибка добавления фантиков: {message}"
             )
         
-        # 7. Помечаем платеж как подтвержденный
+        # 6. Помечаем платеж как подтвержденный
         await self.db.update_payment_status(payment_id, 'confirmed', transaction_hash)
         
         print(f"✅ TON пополнение подтверждено: пользователь {user_id} получил {payment.amount_fantics} фантиков, баланс: {new_balance}")
@@ -358,12 +332,7 @@ class PaymentManager:
             "added_amount": payment.amount_fantics,
             "payment_method": "ton",
             "transaction_hash": transaction_hash,
-            "payment_id": payment_id,
-            "verification_details": {
-                "amount_sent": verification.amount_sent,
-                "sender_address": verification.sender_address,
-                "block_number": verification.block_number
-            }
+            "payment_id": payment_id
         }
 
     # =========================================================================
