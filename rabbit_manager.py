@@ -2,12 +2,12 @@ import logging
 from typing import Optional, Dict, Any
 from faststream.rabbit.fastapi import RabbitRouter
 from config import RABBITMQ_URL
-from database import DatabaseManager
+from database import DatabaseFacade
 
 class RabbitManager:
     """Менеджер для работы с RabbitMQ"""
     
-    def __init__(self, db_manager: Optional[DatabaseManager] = None):
+    def __init__(self, db_manager: Optional[DatabaseFacade] = None):
         self.router: Optional[RabbitRouter] = None
         self.is_available: bool = False
         self.is_connected: bool = False

@@ -4,7 +4,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 from datetime import datetime
-from database import DatabaseManager
+from database import DatabaseFacade
 from rabbit_manager import RabbitManager
 import config
 import asyncio
@@ -126,7 +126,7 @@ class PaymentManager:
     - Проверка статуса платежей (планируется)
     """
     
-    def __init__(self, db_manager: DatabaseManager, rabbit_manager: Optional[RabbitManager] = None):
+    def __init__(self, db_manager: DatabaseFacade, rabbit_manager: Optional[RabbitManager] = None):
         self.db = db_manager
         self.rabbit = rabbit_manager
         

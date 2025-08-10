@@ -7,12 +7,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
 from contextlib import asynccontextmanager
 
-from database import DatabaseManager
-from Cases import CaseManager
+from database import DatabaseFacade
+from database import CaseManager
 from rabbit_manager import RabbitManager
 import config
 from dependencies import get_current_user, get_current_user_id
 from payment_manager import PaymentManager, TonWalletRequest, TonWalletResponse, FanticsTransaction, TopUpTonRequest, TopUpStarsRequest
+from withdrawal_manager import WithdrawalManager, WithdrawalRequestModel
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
@@ -20,11 +21,12 @@ for logger in ["uvicorn.access", "uvicorn.error", "fastapi", "sqlalchemy", "aio_
     logging.getLogger(logger).setLevel(logging.WARNING)
 
 
-db_manager = DatabaseManager(config.DATABASE_URL)
-case_manager = CaseManager(db_manager)
+db_manager = DatabaseFacade(config.DATABASE_URL)
+case_manager = db_manager.case_manager
 rabbit_manager = RabbitManager(db_manager)
 use_rabbitmq = rabbit_manager.initialize()
 payment_manager = PaymentManager(db_manager, rabbit_manager)
+withdrawal_manager = WithdrawalManager(db_manager)
 
 
 @asynccontextmanager
@@ -231,6 +233,60 @@ async def get_payment_status(
         "confirmed_at": payment.confirmed_at.isoformat() if payment.confirmed_at else None,
         "transaction_hash": payment.transaction_hash
     }
+
+
+# ========== ЭНДПОИНТЫ ДЛЯ ВЫВОДА TON ==========
+
+@app.post("/withdrawal/request")
+async def create_withdrawal_request(
+    request: WithdrawalRequestModel,
+    current_user_id: int = Depends(get_current_user_id)
+):
+    """Создание запроса на вывод TON"""
+    return await withdrawal_manager.create_withdrawal_request(request)
+
+@app.get("/withdrawal/info")
+async def get_withdrawal_info(current_user_id: int = Depends(get_current_user_id)):
+    """Получение информации о выводе для пользователя"""
+    return await withdrawal_manager.get_withdrawal_info(current_user_id)
+
+@app.get("/withdrawal/history")
+async def get_withdrawal_history(current_user_id: int = Depends(get_current_user_id)):
+    """Получение истории выводов пользователя"""
+    withdrawals = await db_manager.get_user_withdrawal_requests(current_user_id, limit=50)
+    return [
+        {
+            "id": w.id,
+            "amount_fantics": w.amount_fantics,
+            "amount_ton": w.amount_ton,
+            "fee_amount": w.fee_amount,
+            "destination_address": w.destination_address,
+            "status": w.status,
+            "transaction_hash": w.transaction_hash,
+            "error_message": w.error_message,
+            "created_at": w.created_at.isoformat(),
+            "processed_at": w.processed_at.isoformat() if w.processed_at else None
+        }
+        for w in withdrawals
+    ]
+
+@app.post("/withdrawal/process")
+async def process_withdrawals(current_user_id: int = Depends(get_current_user_id)):
+    """Обработка всех ожидающих выводов (только для админов)"""
+    # Проверяем, является ли пользователь админом
+    if current_user_id not in config.ADMIN_IDS:
+        raise HTTPException(status_code=403, detail="Доступ запрещен")
+    
+    return await withdrawal_manager.process_pending_withdrawals()
+
+@app.get("/withdrawal/statistics")
+async def get_withdrawal_statistics(current_user_id: int = Depends(get_current_user_id)):
+    """Получение статистики выводов (только для админов)"""
+    # Проверяем, является ли пользователь админом
+    if current_user_id not in config.ADMIN_IDS:
+        raise HTTPException(status_code=403, detail="Доступ запрещен")
+    
+    return await db_manager.get_withdrawal_statistics()
 
 
 if __name__ == "__main__":

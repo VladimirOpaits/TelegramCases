@@ -36,6 +36,20 @@ TON_WALLET_MAINNET = os.getenv("TON_WALLET_MAINNET", "EQD4FPq-PRDieyQKkizFTRtSDy
 # Выбираем адрес в зависимости от сети
 TON_WALLET_ADDRESS = TON_WALLET_TESTNET if TON_TESTNET else TON_WALLET_MAINNET
 
+# Настройки для автоматического вывода TON
+WITHDRAWAL_ENABLED = os.getenv("WITHDRAWAL_ENABLED", "false").lower() == "true"
+WITHDRAWAL_MIN_AMOUNT = int(os.getenv("WITHDRAWAL_MIN_AMOUNT", "1000"))  # Минимальная сумма в фантиках
+WITHDRAWAL_MAX_AMOUNT = int(os.getenv("WITHDRAWAL_MAX_AMOUNT", "100000"))  # Максимальная сумма в фантиках
+WITHDRAWAL_DAILY_LIMIT = int(os.getenv("WITHDRAWAL_DAILY_LIMIT", "500000"))  # Дневной лимит в фантиках
+WITHDRAWAL_FEE_PERCENT = float(os.getenv("WITHDRAWAL_FEE_PERCENT", "2.0"))  # Комиссия в процентах
+
+# Приватный ключ для автоматического вывода (ОСТОРОЖНО!)
+WITHDRAWAL_PRIVATE_KEY = os.getenv("WITHDRAWAL_PRIVATE_KEY")  # Base64 encoded private key
+
+# Админ ID для управления системой
+ADMIN_ID = os.getenv("ADMIN_ID", "1943755838")  # ID администратора Telegram
+ADMIN_IDS = [int(ADMIN_ID)] if ADMIN_ID else [1943755838]  # Список админ ID
+
 print(f"🔧 Режим разработки: {DEV_MODE}")
 print(f"🌐 Web App URL: {WEB_APP_URL}")
 print(f"🔒 CORS Origins: {CORS_ORIGINS}")
@@ -43,3 +57,10 @@ print(f"🗄️ Database: {'Neon' if 'neon' in str(DATABASE_URL) else 'PostgreSQ
 print(f"🐰 RabbitMQ: {'CloudAMQP' if RABBITMQ_URL and 'cloudamqp' in RABBITMQ_URL else 'Local' if RABBITMQ_URL else 'Отключен'}")
 print(f"🌐 TON Network: {'TESTNET' if TON_TESTNET else 'MAINNET'}")
 print(f"💰 TON Wallet: {TON_WALLET_ADDRESS[:10]}...{TON_WALLET_ADDRESS[-10:]}")
+print(f"💸 Withdrawal: {'Enabled' if WITHDRAWAL_ENABLED else 'Disabled'}")
+if WITHDRAWAL_ENABLED:
+    print(f"📊 Withdrawal Limits: {WITHDRAWAL_MIN_AMOUNT:,} - {WITHDRAWAL_MAX_AMOUNT:,} fantics")
+    print(f"📅 Daily Limit: {WITHDRAWAL_DAILY_LIMIT:,} fantics")
+    print(f"💸 Fee: {WITHDRAWAL_FEE_PERCENT}%")
+
+print(f"👑 Admin ID: {ADMIN_ID}")
