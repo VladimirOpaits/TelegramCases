@@ -5,13 +5,21 @@ This module provides WithdrawalManager class for:
 - Withdrawal request management
 - Withdrawal status updates
 - Withdrawal statistics and history
+- TonKeeper integration for TON withdrawals
 """
 
+import asyncio
+import sys
+import os
 from sqlalchemy import select, func
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from .models import WithdrawalRequest
 from .manager import DatabaseManager
+
+# Добавляем путь к корневой директории для импорта ton_keeper_manager
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from ton_keeper_manager import tonkeeper_manager
 
 
 class WithdrawalManager:
@@ -20,6 +28,7 @@ class WithdrawalManager:
     def __init__(self, db_manager: DatabaseManager):
         self.db_manager = db_manager
         self.async_session = db_manager.async_session
+        self.tonkeeper = tonkeeper_manager
 
     # ========== МЕТОДЫ ДЛЯ РАБОТЫ С ЗАПРОСАМИ НА ВЫВОД ==========
     
@@ -33,6 +42,11 @@ class WithdrawalManager:
     ) -> bool:
         """Создание запроса на вывод TON"""
         try:
+            # Валидация TON адреса через TonKeeper
+            if not self.tonkeeper.validate_ton_address(destination_address):
+                print(f"❌ Неверный TON адрес: {destination_address}")
+                return False
+            
             async with self.async_session() as session:
                 withdrawal = WithdrawalRequest(
                     user_id=user_id,
@@ -44,11 +58,73 @@ class WithdrawalManager:
                 )
                 session.add(withdrawal)
                 await session.commit()
+                
+                print(f"✅ Запрос на вывод создан: {amount_ton} TON -> {destination_address}")
                 return True
                 
         except Exception as e:
             print(f"❌ Ошибка создания запроса на вывод: {e}")
             return False
+    
+    async def create_withdrawal_qr(
+        self, 
+        withdrawal_id: int,
+        comment: str = ""
+    ) -> Optional[Dict[str, Any]]:
+        """Создание QR-кода для вывода TON через TonKeeper"""
+        try:
+            # Получаем данные о выводе
+            withdrawal = await self.get_withdrawal_request(withdrawal_id)
+            if not withdrawal:
+                print(f"❌ Запрос на вывод {withdrawal_id} не найден")
+                return None
+            
+            if withdrawal.status != 'pending':
+                print(f"❌ Запрос на вывод {withdrawal_id} уже обработан (статус: {withdrawal.status})")
+                return None
+            
+            # Создаем QR-код через TonKeeper
+            qr_result = self.tonkeeper.create_withdrawal_qr(
+                amount_ton=withdrawal.amount_ton,
+                destination_address=withdrawal.destination_address,
+                withdrawal_id=withdrawal_id,
+                comment=comment
+            )
+            
+            if qr_result["success"]:
+                print(f"✅ QR-код для вывода {withdrawal_id} создан успешно")
+                return qr_result
+            else:
+                print(f"❌ Ошибка создания QR-кода: {qr_result['error']}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ Ошибка создания QR-кода: {e}")
+            return None
+    
+    async def get_withdrawal_instructions(
+        self, 
+        withdrawal_id: int
+    ) -> Optional[str]:
+        """Получение инструкций по выводу TON"""
+        try:
+            withdrawal = await self.get_withdrawal_request(withdrawal_id)
+            if not withdrawal:
+                return None
+            
+            # Создаем сводку по выводу
+            summary = self.tonkeeper.create_withdrawal_summary(
+                withdrawal_id=withdrawal_id,
+                amount_ton=withdrawal.amount_ton,
+                destination_address=withdrawal.destination_address,
+                fee_ton=withdrawal.fee_amount
+            )
+            
+            return summary
+            
+        except Exception as e:
+            print(f"❌ Ошибка получения инструкций: {e}")
+            return None
     
     async def get_withdrawal_request(self, request_id: int) -> Optional[WithdrawalRequest]:
         """Получение запроса на вывод по ID"""
@@ -192,4 +268,12 @@ class WithdrawalManager:
                 "total_fantics": 0,
                 "total_ton": 0,
                 "total_fees": 0
-            } 
+            }
+    
+    async def get_ton_network_info(self) -> Dict[str, Any]:
+        """Получение информации о сети TON"""
+        return self.tonkeeper.get_ton_network_info()
+    
+    def estimate_ton_fee(self) -> float:
+        """Оценка комиссии за транзакцию TON"""
+        return self.tonkeeper.estimate_transaction_fee() 
