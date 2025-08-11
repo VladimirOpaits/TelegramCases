@@ -58,4 +58,8 @@ logs/
 .env.local
 .env.development
 .env.test
-.env.production 
+.env.production
+
+# Docker
+Dockerfile
+.dockerignore 
